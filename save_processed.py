@@ -3,9 +3,9 @@ import os
 from filenamegen import generate_filename
 from datetime import datetime
 
-def save_processed(query, data):
+def save_processed(query, data, source="twitterapi.io"):
     tweets = []
-    
+
     for tweet in data.get("tweets", []):
         tweets.append({
             "id": tweet.get("id"),
@@ -27,12 +27,11 @@ def save_processed(query, data):
             ]
         })
 
-    # Metadata — Problem 4 solved
     processed = {
         "metadata": {
             "query": query,
             "fetchedAt": datetime.now().isoformat(),
-            "apiSource": "twitterapi.io",
+            "apiSource": source,
             "tweetCount": len(tweets)
         },
         "tweets": tweets

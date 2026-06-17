@@ -33,13 +33,14 @@ for query in queries:
     if USE_PAGINATION:
         tweets = fetch_all_pages(query, QUERY_TYPE, max_pages=3)
         data = {"tweets": tweets}
+        source = "twitterapi.io"  # paginator uses primary by default
     else:
-        success, data = fetch_tweets(query, QUERY_TYPE, COUNT)
+        success, data, source = fetch_tweets(query, QUERY_TYPE, COUNT)
         if not success:
             continue
 
     save_raw(query, data)
-    save_processed(query, data)
+    save_processed(query, data, source)
     time.sleep(5)
 
 print(f"\nPipeline completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")

@@ -1,10 +1,13 @@
 def handle_response(response):
     status = response.status_code
-    
+
     if status == 200:
         return True, response.json()
     elif status == 401:
         print("Error 401: Invalid API key")
+        return False, None
+    elif status == 402:
+        print("Error 402: Payment required — free tier limit reached or feature requires paid plan")
         return False, None
     elif status == 403:
         print("Error 403: Access denied")

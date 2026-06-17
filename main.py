@@ -18,7 +18,7 @@ print(f"Loaded {len(queries)} queries from queries.txt")
 # ============================================================
 QUERY_TYPE = "Latest"
 COUNT = 20
-USE_PAGINATION = False
+USE_PAGINATION = True
 
 # ============================================================
 # MAIN PIPELINE
@@ -40,6 +40,6 @@ for query in queries:
 
     save_raw(query, data)
     save_processed(query, data)
-    time.sleep(3)
+    time.sleep(5)
 
 print(f"\nPipeline completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")

@@ -1,3 +1,4 @@
+import time
 from twitter_client import get
 
 def fetch_all_pages(query, query_type="Latest", max_pages=5):
@@ -13,7 +14,6 @@ def fetch_all_pages(query, query_type="Latest", max_pages=5):
             "queryType": query_type,
         }
 
-        # Add cursor if we have one (page 2 onwards)
         if next_cursor:
             params["cursor"] = next_cursor
 
@@ -31,7 +31,6 @@ def fetch_all_pages(query, query_type="Latest", max_pages=5):
         all_tweets.extend(tweets)
         print(f"  ✓ Page {page}: {len(tweets)} tweets (total: {len(all_tweets)})")
 
-        # Check for next page
         next_cursor = data.get("next_cursor") or data.get("nextCursor")
 
         if not next_cursor:
@@ -39,6 +38,7 @@ def fetch_all_pages(query, query_type="Latest", max_pages=5):
             break
 
         page += 1
+        time.sleep(5)  # wait between pages
 
     print(f"  Total tweets collected: {len(all_tweets)}")
     return all_tweets

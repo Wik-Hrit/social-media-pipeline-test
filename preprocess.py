@@ -29,7 +29,21 @@ nltk.download("wordnet",   quiet=True)
 from nltk.stem import WordNetLemmatizer
 
 import spacy
-from textblob import TextBlob                     # Fix 10: sentiment
+# Fix 10: Sentiment — VADER + RoBERTa (twitter-trained)
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch
+
+vader = SentimentIntensityAnalyzer()
+ROBERTA_MODEL      = "cardiffnlp/twitter-roberta-base-sentiment"
+_roberta_tokenizer = AutoTokenizer.from_pretrained(ROBERTA_MODEL)
+_roberta_model     = AutoModelForSequenceClassification.from_pretrained(ROBERTA_MODEL)
+_roberta_model.eval()
+ROBERTA_LABELS = ["negative", "neutral", "positive"]
+
+# Fix 13: Topic Modelling via LDA
+from gensim import corpora
+from gensim.models import LdaModel
 
 # ── Models ────────────────────────────────────────────────────────────────────
 nlp        = spacy.load("en_core_web_sm")
@@ -136,18 +150,83 @@ def deduplicate(tweets: list) -> list:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_sentiment(text: str) -> dict:
-    """Fix 10: TextBlob sentiment — polarity in [-1,1], subjectivity in [0,1]."""
-    blob = TextBlob(text)
-    pol  = blob.sentiment.polarity
+    """Fix 10: VADER (fast, compound score) + RoBERTa (tweet-trained, accurate)."""
+    # VADER
+    vader_scores = vader.polarity_scores(text)
+    compound     = vader_scores["compound"]
+    vader_label  = "positive" if compound >= 0.05 else "negative" if compound <= -0.05 else "neutral"
+
+    # RoBERTa — truncate to 512 tokens
+    try:
+        inputs  = _roberta_tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+        with torch.no_grad():
+            logits = _roberta_model(**inputs).logits
+        probs        = torch.softmax(logits, dim=1).squeeze().tolist()
+        roberta_label = ROBERTA_LABELS[probs.index(max(probs))]
+        roberta_scores = {label: round(p, 4) for label, p in zip(ROBERTA_LABELS, probs)}
+    except Exception:
+        roberta_label  = "neutral"
+        roberta_scores = {"negative": 0.0, "neutral": 1.0, "positive": 0.0}
+
     return {
-        "polarity":     round(pol, 4),
-        "subjectivity": round(blob.sentiment.subjectivity, 4),
-        "label":        "positive" if pol > 0.05 else "negative" if pol < -0.05 else "neutral",
+        "vader": {
+            "compound": round(compound, 4),
+            "pos":      round(vader_scores["pos"], 4),
+            "neu":      round(vader_scores["neu"], 4),
+            "neg":      round(vader_scores["neg"], 4),
+            "label":    vader_label,
+        },
+        "roberta": {
+            "label":  roberta_label,
+            "scores": roberta_scores,
+        },
+        "final_label": roberta_label,   # RoBERTa as primary signal
     }
 
 def get_keywords(tokens: list, top_n: int = 10) -> list:
     """Fix 11: Top-N keywords by frequency."""
     return [w for w, _ in Counter(tokens).most_common(top_n)]
+
+def get_topics(all_tokens: list, num_topics: int = 5, num_words: int = 5) -> list:
+    """Fix 13: LDA topic modelling across all tweets in a file.
+    Returns list of topics, each with top words."""
+    if len(all_tokens) < 2:
+        return []
+    dictionary = corpora.Dictionary(all_tokens)
+    dictionary.filter_extremes(no_below=2, no_above=0.9)
+    corpus = [dictionary.doc2bow(tokens) for tokens in all_tokens]
+    if not any(corpus):
+        return []
+    lda = LdaModel(
+        corpus=corpus,
+        id2word=dictionary,
+        num_topics=num_topics,
+        random_state=42,
+        passes=5,
+    )
+    topics = []
+    for idx, topic in lda.show_topics(num_topics=num_topics, num_words=num_words, formatted=False):
+        topics.append({
+            "topic_id": idx,
+            "words": [w for w, _ in topic],
+        })
+    return topics
+
+
+def detect_events(tweets: list, top_n: int = 5) -> list:
+    """Fix 12: Simple keyword-spike event detection.
+    Finds top-N keywords that spike across the tweet batch — signals an event."""
+    all_keywords = []
+    for tweet in tweets:
+        all_keywords.extend(tweet.get("keywords", []))
+    freq = Counter(all_keywords)
+    total = sum(freq.values()) or 1
+    events = [
+        {"keyword": kw, "count": cnt, "spike_score": round(cnt / total, 4)}
+        for kw, cnt in freq.most_common(top_n)
+    ]
+    return events
+
 
 def get_engagement(tweet: dict) -> dict:
     """Fix 15: Collect engagement metrics."""
@@ -261,6 +340,13 @@ def preprocess_file(filepath: str, output_dir: str = "data/nlp") -> str:
         except (ValueError, TypeError):
             pass
 
+    # Fix 13: Topic modelling across all tweets
+    all_tokens = [t.get("tokens", []) for t in tweets]
+    topics = get_topics(all_tokens)
+
+    # Fix 12: Event detection via keyword spikes
+    events = detect_events(tweets)
+
     result = {
         "metadata": {
             **data.get("metadata", {}),
@@ -270,7 +356,9 @@ def preprocess_file(filepath: str, output_dir: str = "data/nlp") -> str:
             "afterDedup":     after_dedup,
             "finalCount":     len(tweets),
         },
-        "tweets": tweets,
+        "topics":  topics,   # Fix 13
+        "events":  events,   # Fix 12
+        "tweets":  tweets,
     }
 
     os.makedirs(output_dir, exist_ok=True)

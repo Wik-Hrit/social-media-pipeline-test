@@ -1,35 +1,45 @@
+"""
+paginator.py — Cursor-based pagination using twitterapi.io.
+Fix #1: Twikit cannot paginate → only used when USE_PAGINATION=False (in main.py)
+Fix #2: twitterapi.io supports cursor → use it for proper pagination
+Fix #7: print() replaced with log.*()
+Fix #8: page number tracked and returned in metadata
+"""
+
 import time
 import logging
-from twikit_client import get_twikit
 from twitter_client import get
+from config import COUNT, PAGE_DELAY
 
 log = logging.getLogger(__name__)
 
+
 def fetch_all_pages(query, query_type="Latest", max_pages=3):
+    """
+    Paginate using twitterapi.io cursor.
+    Twikit is NOT used here — it cannot paginate (Fix #1 & #2).
+    """
     all_tweets = []
-    seen_ids   = set()        # Fix #3 — cursor overlap deduplication
+    seen_ids   = set()
     source     = "twitterapi.io"
+    cursor     = None
     page       = 1
-    count      = 20           # Fix #6 — count now passed explicitly
 
     while page <= max_pages:
         log.info(f"  Fetching page {page}...")
 
-        # Primary: Twikit
-        success, data = get_twikit(query, query_type, count=count)
+        params = {
+            "query":     query,
+            "queryType": query_type,
+            "count":     COUNT,
+        }
+        if cursor:
+            params["cursor"] = cursor   # Fix #2 — use cursor for real pagination
 
-        if success:
-            source = "twikit"
-        else:
-            # Fallback: twitterapi.io
-            log.warning(f"  Twikit failed on page {page} — trying twitterapi.io...")
-            params = {"query": query, "queryType": query_type, "count": count}
-            success, data = get("/twitter/tweet/advanced_search", params)
-            if success:
-                source = "twitterapi.io"
+        success, data = get("/twitter/tweet/advanced_search", params)
 
         if not success or not data:
-            log.error(f"  Both sources failed on page {page}")
+            log.error(f"  twitterapi.io failed on page {page}")
             break
 
         tweets = data.get("tweets", [])
@@ -37,22 +47,28 @@ def fetch_all_pages(query, query_type="Latest", max_pages=3):
             log.info(f"  No more tweets found on page {page}")
             break
 
-        # Fix #3 — deduplicate by id across pages
+        # Deduplicate across pages
         new_tweets = []
         for t in tweets:
             tid = t.get("id") or t.get("id_str")
             if tid and tid not in seen_ids:
                 seen_ids.add(tid)
-                # Fix #8 — store source per tweet
-                t["_source"] = source
+                t["_source"]  = source
+                t["_page_no"] = page     # Fix #8 — store page number per tweet
                 new_tweets.append(t)
 
         all_tweets.extend(new_tweets)
         log.info(f"  ✓ Page {page}: {len(new_tweets)} new tweets (total: {len(all_tweets)})")
 
+        # Fix #2 — advance cursor for next page
+        cursor = data.get("next_cursor") or data.get("cursor") or data.get("nextCursor")
+        if not cursor:
+            log.info("  No next cursor — pagination complete")
+            break
+
         page += 1
         if page <= max_pages:
-            time.sleep(5)
+            time.sleep(PAGE_DELAY)
 
     log.info(f"Total tweets collected: {len(all_tweets)}")
-    return all_tweets, source   # Fix #2 — return source
+    return all_tweets, source

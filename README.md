@@ -2,6 +2,8 @@
 
 Twitter data collection and NLP preprocessing pipeline for the Multimodal Broadcast Analytics System, IIT Guwahati.
 
+Built as part of a research internship under Prof. Prithwijit Guha, this pipeline supports multi-source news summarization research by collecting, cleaning, and enriching Twitter data at scale.
+
 ---
 
 ## Project Structure
@@ -14,9 +16,9 @@ social-media-pipeline-test/
 ├── save_raw.py            # saves full raw API response
 ├── save_processed.py      # saves clean structured data with source tracking
 ├── error_handler.py       # handles all HTTP status codes
-├── paginator.py           # multi-page tweet collection with deduplication
-├── filenamegen.py         # timestamped filename generation
-├── preprocess.py          # NLP preprocessing pipeline (cleaning → filtering → NLP enrichment)
+├── paginator.py           # multi-page tweet collection with cursor-based deduplication
+├── filenamegen.py         # timestamped slug-based filename generation
+├── preprocess.py          # NLP preprocessing pipeline (cleaning → filtering → enrichment)
 ├── export_csv.py          # exports data/nlp/ to per-topic CSVs in data/csv/
 ├── main.py                # pipeline entry point
 ├── queries.txt            # add/remove queries here (duplicates auto-removed)
@@ -32,6 +34,8 @@ social-media-pipeline-test/
 
 ## How To Run
 
+### Local
+
 ```bash
 # activate venv
 venv\Scripts\activate
@@ -39,7 +43,6 @@ venv\Scripts\activate
 # install dependencies
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
-python -m textblob.download_corpora
 
 # add queries to queries.txt, then run acquisition
 python main.py
@@ -50,6 +53,29 @@ python preprocess.py
 # export to CSV for review
 python export_csv.py
 ```
+
+### Google Colab (recommended for preprocessing — GPU available)
+
+```python
+# Cell 1 — Clone repo
+!git clone -b twitter_acquisition https://github.com/Wik-Hrit/social-media-pipeline-test.git
+%cd social-media-pipeline-test
+
+# Cell 2 — Install dependencies
+!pip install -r requirements.txt
+!python -m spacy download en_core_web_sm
+
+# Cell 3 — NLTK downloads
+import nltk
+nltk.download('punkt')
+nltk.download('punkt_tab')
+nltk.download('stopwords')
+
+# Cell 4 — Run preprocessing (T4 GPU auto-detected)
+!python preprocess.py
+```
+
+> Set runtime to **T4 GPU** (Runtime → Change runtime type) before running for faster RoBERTa inference.
 
 ---
 
@@ -76,34 +102,34 @@ max_pages = 3  # 3 pages × 20 tweets = 60 tweets per query
 ```
 queries.txt
     ↓
-main.py  (orchestrator)
+main.py  (orchestrator — deduplicates queries, logging, timing)
     ↓
-paginator.py  (multi-page collection)
+paginator.py  (cursor-based multi-page collection, seen_ids dedup)
     ↓
 fetch_tweets.py
-    ├── Primary:  twikit_client.py  (cookie-based, free)
-    └── Fallback: twitter_client.py → twitterapi.io  (on quota/rate-limit errors)
+    ├── Primary:  twikit_client.py  (cookie-based, free, no API key)
+    └── Fallback: twitter_client.py → twitterapi.io  (429/402/403 triggers fallback)
     ↓
 error_handler.py  (status code handling, retry logic)
     ↓
-save_raw.py      →  data/raw/
-save_processed.py →  data/processed/
+save_raw.py       →  data/raw/        (full API response)
+save_processed.py →  data/processed/  (clean fields + metadata + source tracking)
     ↓
-preprocess.py    →  data/nlp/
+preprocess.py     →  data/nlp/        (NLP enrichment — sentiment, NER, topics, keywords)
     ↓
-export_csv.py    →  data/csv/
+export_csv.py     →  data/csv/        (one CSV per query topic)
 ```
 
 ---
 
 ## Fallback Logic
 
-The pipeline uses a two-source strategy:
+The pipeline uses a two-source strategy with automatic failover:
 
 - **Primary:** Twikit (cookie-based, completely free, no API key needed)
 - **Fallback:** twitterapi.io (activates automatically on 429 / 402 / 403 errors)
 
-Source is tracked per tweet and stored in the `source` field of processed output and in `apiSource` in the metadata block.
+Source is tracked **per tweet** (`source` field) and at file level (`apiSource` in metadata).
 
 To set up Twikit, add to `.env`:
 
@@ -114,23 +140,23 @@ TWITTER_PASSWORD=yourpassword
 TWIKIT_COOKIES_FILE=twikit_cookies.json
 ```
 
-First run logs in and saves `twikit_cookies.json`. Subsequent runs reuse cookies silently. If cookies expire, the file is deleted automatically and re-login happens on the next run.
+First run logs in and saves `twikit_cookies.json`. Subsequent runs reuse cookies silently. If cookies expire, the file is auto-deleted and re-login happens on the next run.
 
-> Use a dedicated/burner Twitter account for the pipeline — not your personal account.
+> Use a dedicated/burner Twitter account — not your personal account.
 
 ---
 
 ## API Options Evaluated
 
-### twitterapi.io (fallback)
+### twitterapi.io (current fallback)
 Unofficial wrapper around X's internal API. 100K free credits on signup, then $0.15/1000 tweets. No account login needed. Reliable for research-scale collection.
 
 **Limitations:** Free credits deplete with heavy testing. Hits 429 if requests are too fast — pipeline enforces 5s delay between pages.
 
 ### Twikit (primary)
-Pure Python, completely free, no API key needed. Authenticates via a real Twitter account. Cookie-based — logs in once, reuses session.
+Pure Python, completely free, no API key needed. Authenticates via a real Twitter account. Cookie-based — logs in once, reuses session. Tested and integrated.
 
-**Honest assessment:** Works well for research use. X occasionally changes internal endpoints causing temporary breakage (fix: `pip install twikit --upgrade`). Use a burner account to avoid suspension risk.
+**Current status:** Temporarily broken due to a library-level auth issue (`KEY_BYTE indices`) caused by Twitter's internal API changes. Pipeline auto-falls back to twitterapi.io. Will auto-activate as primary once the library is patched (`pip install twikit --upgrade`).
 
 ### Twscrape
 No meaningful updates in ~11 months. Likely broken against current X endpoints. Not recommended.
@@ -168,7 +194,7 @@ All modules use Python's `logging` module with three levels:
 
 ## Output Format
 
-Each query produces files in three stages:
+Each query produces files across three stages:
 
 ### Raw (`data/raw/query_timestamp.json`)
 Complete API response, nothing stripped.
@@ -218,13 +244,14 @@ Complete API response, nothing stripped.
     "originalCount": 60,
     "afterFilter": 45,
     "afterDedup": 43,
-    "finalCount": 43
+    "finalCount": 43,
+    "device": "cpu"
   },
   "topics": [
     { "topic_id": 0, "words": ["flood", "relief", "manipur", "affected", "district"] }
   ],
   "events": [
-    { "keyword": "flood", "count": 38, "spike_score": 0.21 }
+    { "keyword": "flood", "count": 38, "freq_ratio": 0.21 }
   ],
   "tweets": [
     {
@@ -235,18 +262,20 @@ Complete API response, nothing stripped.
       "emojis": [],
       "urls": ["https://t.co/..."],
       "tokens": ["manipur", "flood", "relief", "operation", "underway"],
-      "lemmatized_tokens": ["manipur", "flood", "relief", "operation", "underway"],
-      "entities": [
-        { "text": "Manipur", "label": "GPE" }
-      ],
+      "lemmatized_tokens": ["manipur", "flood", "relieve", "operation", "underway"],
+      "entities": [{ "text": "Manipur", "label": "GPE" }],
       "entity_freq": { "Manipur": 2 },
       "sentiment": {
         "vader": { "compound": -0.42, "label": "negative" },
-        "roberta": { "label": "negative", "scores": { "negative": 0.71, "neutral": 0.22, "positive": 0.07 } },
+        "roberta": {
+          "label": "negative",
+          "scores": { "negative": 0.71, "neutral": 0.22, "positive": 0.07 }
+        },
         "final_label": "negative"
       },
       "keywords": ["flood", "relief", "manipur", "district", "operation"],
-      "engagement": { "likes": 4, "retweets": 3, "replies": 0, "views": 500 }
+      "engagement": { "likes": 4, "retweets": 3, "replies": 0, "views": 500 },
+      "source": "twitterapi.io"
     }
   ]
 }
@@ -254,31 +283,41 @@ Complete API response, nothing stripped.
 
 ---
 
-## NLP Preprocessing — 15 Enhancements
+## NLP Preprocessing — Enhancements
 
-| # | Enhancement | Function | Output Field |
+| # | Enhancement | Approach | Output Field |
 |---|-------------|----------|--------------|
-| 1 | Hashtag extraction | `extract_hashtags()` | `hashtags` |
-| 2 | Mention extraction | `extract_mentions()` | `mentions` |
-| 3 | Emoji preservation | `extract_emojis()` | `emojis` |
-| 4 | URL storage | `extract_urls()` | `urls` |
-| 5 | Batch NLP processing | `nlp.pipe()` | — |
-| 6 | spaCy tokenization + lemmatization | `token.lemma_` | `tokens` |
-| 7 | Deterministic language detection | `DetectorFactory.seed=0` | — |
-| 8 | Text deduplication + ID dedup | `deduplicate()` | — |
-| 9 | Entity frequency | `Counter(entity_texts)` | `entity_freq` |
-| 10 | Sentiment analysis (VADER + RoBERTa) | `get_sentiment()` | `sentiment` |
-| 11 | Keyword extraction | `get_keywords()` | `keywords` |
-| 12 | Event detection | `detect_events()` | `events` |
-| 13 | Topic modelling (LDA) | `get_topics()` | `topics` |
-| 14 | Lemmatized tokens | `token.lemma_` | `lemmatized_tokens` |
-| 15 | Engagement metrics | `get_engagement()` | `engagement` |
+| 1 | Hashtag extraction | Regex `#(\w+)` | `hashtags` |
+| 2 | Mention extraction | Regex `@(\w+)` | `mentions` |
+| 3 | Emoji preservation | `emoji` library (all Unicode blocks) | `emojis` |
+| 4 | URL storage | Regex, stored before cleaning | `urls` |
+| 5 | Batch NLP | `nlp.pipe()` — batch_size=50 | — |
+| 6 | Tokenization | spaCy surface forms, lowercased | `tokens` |
+| 7 | Lemmatization | spaCy `token.lemma_` | `lemmatized_tokens` |
+| 8 | Deterministic lang detection | `DetectorFactory.seed=0` | — |
+| 9 | Deduplication | ID dedup + text dedup | — |
+| 10 | Entity frequency | `Counter` over NER entities | `entity_freq` |
+| 11 | Sentiment — rule-based | VADER | `sentiment.vader` |
+| 12 | Sentiment — transformer | RoBERTa (twitter-trained, batched, GPU-aware) | `sentiment.roberta` |
+| 13 | Keyword extraction | TF-IDF across batch (scikit-learn) | `keywords` |
+| 14 | Event detection | Keyword freq_ratio across tweets | `events` (file-level) |
+| 15 | Topic modelling | BERTopic (replaces LDA, min 5 tweets) | `topics` (file-level) |
+| 16 | Engagement metrics | likes, retweets, replies, views | `engagement` |
+
+> **Note:** BERTopic requires minimum 5 tweets per file to run. Files with fewer tweets skip topic modelling gracefully.
+
+---
+
+## Testing
+
+| Environment | Status | Notes |
+|-------------|--------|-------|
+| Local (Windows, CPU) | ✅ Tested | 106 files, all processed |
+| Google Colab (T4 GPU) | ✅ Tested | RoBERTa batching ~10x faster on GPU |
 
 ---
 
 ## Dependencies
-
-Key libraries:
 
 ```
 requests
@@ -287,19 +326,23 @@ twikit
 nltk
 spacy
 langdetect
+emoji
 vaderSentiment
 transformers
 torch
+bertopic
+scikit-learn
+tqdm
 gensim
 ```
 
-Full list in `requirements.txt`.
+Full pinned versions in `requirements.txt`.
 
 ---
 
 ## Repository
 
-**Branch:** `twitter_acquisition`  
-**Group:** Multimodal Broadcast Analytics, IIT Guwahati  
-**Supervisor:** Prof. Prithwijit Guha  
-**Alloted to:** Shlok Verman (M.Tech Scholar, IIT Guwahati)
+**Branch:** `twitter_acquisition`
+**Group:** Multimodal Broadcast Analytics, IIT Guwahati
+**Supervisor:** Prof. Prithwijit Guha
+**Assigned to:** Shlok Verman (M.Tech Scholar, IIT Guwahati)

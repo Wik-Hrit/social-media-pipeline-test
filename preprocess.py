@@ -27,7 +27,6 @@ DetectorFactory.seed = 0
 
 import nltk
 from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
 nltk.download("punkt",     quiet=True)
 nltk.download("punkt_tab", quiet=True)
 nltk.download("stopwords", quiet=True)
@@ -46,12 +45,15 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from sklearn.feature_extraction.text import TfidfVectorizer   # Fix 5
 
 # Fix 6: BERTopic
+import logging
+log = logging.getLogger(__name__)
+
 try:
     from bertopic import BERTopic
     BERTOPIC_AVAILABLE = True
 except ImportError:
     BERTOPIC_AVAILABLE = False
-    print("[warn] BERTopic not installed — topic modelling disabled. Run: pip install bertopic")
+    log.warning("BERTopic not installed — topic modelling disabled. Run: pip install bertopic")
 
 vader              = SentimentIntensityAnalyzer()
 ROBERTA_MODEL      = "cardiffnlp/twitter-roberta-base-sentiment"
@@ -221,7 +223,7 @@ def get_topics_bertopic(texts: list) -> list:
             result.append({"topic_id": int(row["Topic"]), "words": words[:5]})
         return result
     except Exception as e:
-        print(f"  [warn] BERTopic failed: {e}")
+        log.warning(f"BERTopic failed: {e}")
         return []
 
 
@@ -268,8 +270,9 @@ def preprocess_file(filepath: str, output_dir: str = "data/nlp") -> str:
     after_dedup = len(tweets)
 
     if not tweets:
-        print(f"  ✓ {original_count} → 0 tweets (all filtered)")
-    
+        log.warning(f"  {original_count} → 0 tweets after filtering — skipping file")
+        return None   # Fix 3: don't write empty JSON
+
     # ── Pre-extraction (hashtags, mentions, emojis, URLs) ────────────────────
     for tweet in tweets:
         raw = tweet.get("text", "")
@@ -356,19 +359,27 @@ def preprocess_file(filepath: str, output_dir: str = "data/nlp") -> str:
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
 
-    print(f"  ✓ {original_count} → {len(tweets)} tweets after preprocessing")
-    print(f"  ✓ Saved → {out_path}")
+    log.info(f"  ✓ {original_count} → {len(tweets)} tweets after preprocessing")
+    log.info(f"  ✓ Saved → {out_path}")
     return out_path
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+
     processed_dir = "data/processed"
-    files = [
-        os.path.join(processed_dir, f)
-        for f in os.listdir(processed_dir)
-        if f.endswith(".json")
-    ]
-    print(f"Found {len(files)} processed files\n")
+    # Walk subdirectories too (date-based folders)
+    files = []
+    for root, dirs, filenames in os.walk(processed_dir):
+        for f in filenames:
+            if f.endswith(".json"):
+                files.append(os.path.join(root, f))
+
+    log.info(f"Found {len(files)} processed files")
     for fp in tqdm(files, desc="Files"):
-        print(f"\nProcessing: {fp}")
+        log.info(f"Processing: {fp}")
         preprocess_file(fp)

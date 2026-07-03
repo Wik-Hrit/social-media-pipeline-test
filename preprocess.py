@@ -39,6 +39,11 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 
+from db_manager import (get_conn, upsert_query, insert_fetch_run,
+                        insert_tweets, insert_nlp, insert_entities,
+                        insert_hashtags, insert_keywords,
+                        insert_topics, insert_events)
+
 # Fix 4: GPU if available
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -383,3 +388,20 @@ if __name__ == "__main__":
     for fp in tqdm(files, desc="Files"):
         log.info(f"Processing: {fp}")
         preprocess_file(fp)
+
+
+
+
+        with get_conn() as conn:
+        query_id = upsert_query(conn, result["metadata"]["query"])
+        run_id   = insert_fetch_run(conn, query_id, result["metadata"],
+                                    nlp_file=os.path.basename(out_path))
+        insert_tweets(conn, run_id, data.get("tweets", []),
+                      default_source=result["metadata"].get("apiSource"))
+        insert_hashtags(conn, run_id, data.get("tweets", []))
+        insert_nlp(conn, run_id, tweets)
+        insert_entities(conn, run_id, tweets)
+        insert_keywords(conn, run_id, tweets)
+        insert_topics(conn, run_id, topics)
+        insert_events(conn, run_id, events)
+    log.info(f"  ✓ Written to pipeline.db")

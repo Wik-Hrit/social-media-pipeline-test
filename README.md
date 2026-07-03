@@ -1,4 +1,4 @@
-cat > /mnt/user-data/outputs/README.md << 'EOF'
+
 # Social Media Acquisition Pipeline
 
 Twitter data collection, NLP preprocessing, and structured SQLite storage pipeline for the Multimodal Broadcast Analytics System, IIT Guwahati.
@@ -413,8 +413,4 @@ Full pinned versions in `requirements.txt`.
 **Branch:** `twitter_acquisition`
 **Group:** Multimodal Broadcast Analytics, IIT Guwahati
 **Supervisor:** Prof. Prithwijit Guha
-**Team Lead:** Shlok Verma (M.Tech Scholar, IIT Guwahati)
-EOF
-Output
-
-exit code 0
+**Assigned by:** Shlok Verman (M.Tech Scholar, IIT Guwahati)

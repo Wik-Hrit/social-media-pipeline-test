@@ -1,8 +1,9 @@
+cat > /mnt/user-data/outputs/README.md << 'EOF'
 # Social Media Acquisition Pipeline
 
-Twitter data collection and NLP preprocessing pipeline for the Multimodal Broadcast Analytics System, IIT Guwahati.
+Twitter data collection, NLP preprocessing, and structured SQLite storage pipeline for the Multimodal Broadcast Analytics System, IIT Guwahati.
 
-Built as part of a research internship under Prof. Prithwijit Guha, this pipeline supports multi-source news summarization research by collecting, cleaning, and enriching Twitter data at scale.
+Built as part of a research internship under Prof. Prithwijit Guha, this pipeline supports multi-source news summarization research by collecting, cleaning, enriching, and storing Twitter data at scale.
 
 ---
 
@@ -18,10 +19,14 @@ social-media-pipeline-test/
 ├── error_handler.py       # handles all HTTP status codes
 ├── paginator.py           # multi-page tweet collection with cursor-based deduplication
 ├── filenamegen.py         # timestamped slug-based filename generation
-├── preprocess.py          # NLP preprocessing pipeline (cleaning → filtering → enrichment)
+├── preprocess.py          # NLP preprocessing pipeline + auto-writes to pipeline.db
+├── db_manager.py          # SQLite schema (9 tables) + all insert/query functions
+├── ingest.py              # one-time migration — loads all data/nlp/ into pipeline.db
 ├── export_csv.py          # exports data/nlp/ to per-topic CSVs in data/csv/
+├── verify_db.py           # quick sanity check — prints row counts for all 9 tables
 ├── main.py                # pipeline entry point
 ├── queries.txt            # add/remove queries here (duplicates auto-removed)
+├── pipeline.db            # SQLite database (not committed — generated on first ingest)
 ├── data/
 │   ├── raw/               # raw API responses
 │   ├── processed/         # clean structured JSON with metadata
@@ -47,8 +52,14 @@ python -m spacy download en_core_web_sm
 # add queries to queries.txt, then run acquisition
 python main.py
 
-# run NLP preprocessing on collected data
+# run NLP preprocessing (also auto-writes to pipeline.db)
 python preprocess.py
+
+# one-time migration of existing data/nlp/ files into pipeline.db
+python ingest.py
+
+# verify DB row counts
+python verify_db.py
 
 # export to CSV for review
 python export_csv.py
@@ -116,8 +127,66 @@ save_raw.py       →  data/raw/        (full API response)
 save_processed.py →  data/processed/  (clean fields + metadata + source tracking)
     ↓
 preprocess.py     →  data/nlp/        (NLP enrichment — sentiment, NER, topics, keywords)
+                  →  pipeline.db      (auto-written after every file via db_manager)
     ↓
 export_csv.py     →  data/csv/        (one CSV per query topic)
+```
+
+---
+
+## SQLite Database
+
+All NLP-enriched data is stored in `pipeline.db` — a normalized SQLite database with 9 tables.
+
+### Schema
+
+| Table | Description | Rows (current) |
+|-------|-------------|----------------|
+| `queries` | Unique query strings | 24 |
+| `fetch_runs` | One row per processed JSON file | 148 |
+| `tweets` | Base tweet fields from data/processed/ | 1423 |
+| `tweet_nlp` | NLP enrichment — sentiment, tokens, entities | 1121 |
+| `entities` | Named entities per tweet (NER) | 21556 |
+| `hashtags` | One row per hashtag per tweet | 5715 |
+| `keywords` | TF-IDF keywords per tweet | 18686 |
+| `topics` | BERTopic output per fetch run | 0* |
+| `events` | Keyword frequency events per fetch run | 515 |
+
+> *BERTopic requires minimum 5 tweets per file. Most files filtered below threshold — will populate as more data is collected.
+
+### Sample Queries
+
+```sql
+-- All negative tweets about Manipur flood
+SELECT t.text, n.vader_compound, n.final_label
+FROM tweets t JOIN tweet_nlp n ON t.id = n.tweet_id
+JOIN fetch_runs r ON t.fetch_run_id = r.id
+JOIN queries q ON r.query_id = q.id
+WHERE q.query_text = 'Manipur flood'
+  AND n.final_label = 'negative';
+
+-- Top entities across all tweets
+SELECT entity_text, entity_label, SUM(frequency) as total
+FROM entities
+GROUP BY entity_text, entity_label
+ORDER BY total DESC
+LIMIT 20;
+
+-- Most used hashtags
+SELECT hashtag, COUNT(*) as count
+FROM hashtags
+GROUP BY hashtag
+ORDER BY count DESC
+LIMIT 10;
+```
+
+### Auto-write
+
+`preprocess.py` automatically writes to `pipeline.db` after processing each file — no manual step needed for future runs.
+
+For one-time migration of existing data:
+```bash
+python ingest.py
 ```
 
 ---
@@ -312,7 +381,7 @@ Complete API response, nothing stripped.
 
 | Environment | Status | Notes |
 |-------------|--------|-------|
-| Local (Windows, CPU) | ✅ Tested | 106 files, all processed |
+| Local (Windows, CPU) | ✅ Tested | 148 files processed, 1423 tweets ingested |
 | Google Colab (T4 GPU) | ✅ Tested | RoBERTa batching ~10x faster on GPU |
 
 ---
@@ -333,7 +402,6 @@ torch
 bertopic
 scikit-learn
 tqdm
-gensim
 ```
 
 Full pinned versions in `requirements.txt`.
@@ -345,4 +413,8 @@ Full pinned versions in `requirements.txt`.
 **Branch:** `twitter_acquisition`
 **Group:** Multimodal Broadcast Analytics, IIT Guwahati
 **Supervisor:** Prof. Prithwijit Guha
-**Assigned to:** Shlok Verman (M.Tech Scholar, IIT Guwahati)
+**Team Lead:** Shlok Verma (M.Tech Scholar, IIT Guwahati)
+EOF
+Output
+
+exit code 0

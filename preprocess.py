@@ -1,23 +1,12 @@
 """
 preprocess.py
 Preprocessing pipeline for collected tweet data.
-
-Fixes applied (Shlok Sir, Round 3(not sure for number of iterations)):
-  1.  Removed unused enrich() — batch pipeline in preprocess_file() handles everything
-  2.  tokens = raw lowercased surface forms; lemmatized_tokens = lemma forms (now distinct)
-  3.  RoBERTa batched across all tweets per file (not per-tweet) — major speed-up
-  4.  GPU used if available (torch.device auto-detect)
-  5.  Keywords via TF-IDF across the batch (replaces frequency count)
-  6.  BERTopic replaces LDA for topic modelling (more reliable on small data)
-  7.  Event detection: spike_score renamed to freq_ratio
-  8.  Emoji extraction uses `emoji` library (covers all Unicode blocks)
-  9.  tqdm progress bars added
-  10. requirements.txt regenerated (see bottom of file for pip freeze instructions)
 """
 
 import re
 import json
 import os
+import logging
 from collections import Counter
 from datetime import datetime
 
@@ -32,33 +21,40 @@ nltk.download("punkt_tab", quiet=True)
 nltk.download("stopwords", quiet=True)
 
 import spacy
-import emoji as emoji_lib                              # Fix 8: proper emoji lib
-from tqdm import tqdm                                  # Fix 9: progress bars
+import emoji as emoji_lib
+from tqdm import tqdm
 
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 
-from db_manager import (get_conn, upsert_query, insert_fetch_run,
-                        insert_tweets, insert_nlp, insert_entities,
-                        insert_hashtags, insert_keywords,
-                        insert_topics, insert_events)
+# P8: SKIP_DB_WRITE env flag — set to "1" on Colab to skip DB write
+SKIP_DB_WRITE = os.environ.get("SKIP_DB_WRITE", "0") == "1"
 
-# Fix 4: GPU if available
+if not SKIP_DB_WRITE:
+    from db_manager import (get_conn, init_db, upsert_query, insert_fetch_run,
+                            insert_tweets, insert_nlp, insert_entities,
+                            insert_hashtags, insert_keywords,
+                            insert_topics, insert_events)
+    init_db()   # P1: init at module level — works whether called from main.py or directly
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-from sklearn.feature_extraction.text import TfidfVectorizer   # Fix 5
+from sklearn.feature_extraction.text import TfidfVectorizer
 
-# Fix 6: BERTopic
-import logging
 log = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 
 try:
     from bertopic import BERTopic
     BERTOPIC_AVAILABLE = True
 except ImportError:
     BERTOPIC_AVAILABLE = False
-    log.warning("BERTopic not installed — topic modelling disabled. Run: pip install bertopic")
+    log.warning("BERTopic not installed — topic modelling disabled.")
 
 vader              = SentimentIntensityAnalyzer()
 ROBERTA_MODEL      = "cardiffnlp/twitter-roberta-base-sentiment"
@@ -73,30 +69,16 @@ STOPWORDS = set(stopwords.words("english"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers — extraction before cleaning
+# Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def extract_hashtags(text: str) -> list:
-    return re.findall(r"#(\w+)", text)
-
-def extract_mentions(text: str) -> list:
-    return re.findall(r"@(\w+)", text)
-
-def extract_urls(text: str) -> list:
-    return re.findall(r"http\S+|www\S+", text)
-
-def extract_emojis(text: str) -> list:
-    """Fix 8: use emoji library — covers all Unicode blocks reliably."""
-    return [e["emoji"] for e in emoji_lib.emoji_list(text)]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# STAGE 1 — Text Cleaning
-# ─────────────────────────────────────────────────────────────────────────────
+def extract_hashtags(text): return re.findall(r"#(\w+)", text)
+def extract_mentions(text): return re.findall(r"@(\w+)", text)
+def extract_urls(text):     return re.findall(r"http\S+|www\S+", text)
+def extract_emojis(text):   return [e["emoji"] for e in emoji_lib.emoji_list(text)]
 
 def clean_text(text: str) -> str:
-    if not text:
-        return ""
+    if not text: return ""
     text = re.sub(r"http\S+|www\S+", "", text)
     text = re.sub(r"@\w+", "", text)
     text = re.sub(r"#(\w+)", r"\1", text)
@@ -106,70 +88,53 @@ def clean_text(text: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STAGE 2 — Filtering
+# Stage 2 — Filtering
 # ─────────────────────────────────────────────────────────────────────────────
 
-def is_valid(tweet: dict, allowed_langs: list = ["en"]) -> bool:
-    if tweet.get("isRetweet"):
-        return False
+def is_valid(tweet: dict, allowed_langs=["en"]) -> bool:
+    if tweet.get("isRetweet"): return False
     cleaned = clean_text(tweet.get("text", ""))
-    if len(cleaned.split()) < 5:
-        return False
+    if len(cleaned.split()) < 5: return False
     tweet_lang = tweet.get("lang", "")
-    if tweet_lang and tweet_lang not in allowed_langs:
-        return False
+    if tweet_lang and tweet_lang not in allowed_langs: return False
     if not tweet_lang:
         try:
-            if detect(cleaned) not in allowed_langs:
-                return False
-        except LangDetectException:
-            return False
+            if detect(cleaned) not in allowed_langs: return False
+        except LangDetectException: return False
     return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STAGE 3 — Deduplication
+# Stage 3 — Deduplication
 # ─────────────────────────────────────────────────────────────────────────────
 
 def deduplicate(tweets: list) -> list:
-    seen_ids   = set()
-    seen_texts = set()
-    unique     = []
+    seen_ids, seen_texts, unique = set(), set(), []
     for tweet in tweets:
         tid  = tweet.get("id")
         text = clean_text(tweet.get("text", "")).lower().strip()
-        if tid and tid in seen_ids:
-            continue
-        if text and text in seen_texts:
-            continue
-        if tid:
-            seen_ids.add(tid)
-        if text:
-            seen_texts.add(text)
+        if tid and tid in seen_ids: continue
+        if text and text in seen_texts: continue
+        if tid:   seen_ids.add(tid)
+        if text:  seen_texts.add(text)
         unique.append(tweet)
     return unique
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Batch NLP helpers
+# NLP helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 def batch_roberta_sentiment(texts: list) -> list:
-    """Fix 3: Batch RoBERTa inference — one forward pass per batch, not per tweet."""
-    results = []
-    batch_size = 16
+    results, batch_size = [], 16
     for i in tqdm(range(0, len(texts), batch_size), desc="  RoBERTa sentiment", leave=False):
         batch = texts[i: i + batch_size]
         try:
-            encoded = _roberta_tokenizer(
-                batch, return_tensors="pt", truncation=True,
-                max_length=512, padding=True
-            )
-            inputs = {k: v.to(DEVICE) for k, v in encoded.items()}  # Fix 4: explicit device
+            encoded = _roberta_tokenizer(batch, return_tensors="pt", truncation=True, max_length=512, padding=True)
+            inputs  = {k: v.to(DEVICE) for k, v in encoded.items()}
             with torch.no_grad():
                 logits = _roberta_model(**inputs).logits
-            probs_batch = torch.softmax(logits, dim=1).cpu().tolist()
-            for probs in probs_batch:
+            for probs in torch.softmax(logits, dim=1).cpu().tolist():
                 label  = ROBERTA_LABELS[probs.index(max(probs))]
                 scores = {l: round(p, 4) for l, p in zip(ROBERTA_LABELS, probs)}
                 results.append({"label": label, "scores": scores})
@@ -180,69 +145,71 @@ def batch_roberta_sentiment(texts: list) -> list:
 
 
 def get_vader_sentiment(text: str) -> dict:
-    scores    = vader.polarity_scores(text)
-    compound  = scores["compound"]
-    label     = "positive" if compound >= 0.05 else "negative" if compound <= -0.05 else "neutral"
-    return {
-        "compound": round(compound, 4),
-        "pos":      round(scores["pos"], 4),
-        "neu":      round(scores["neu"], 4),
-        "neg":      round(scores["neg"], 4),
-        "label":    label,
-    }
+    s = vader.polarity_scores(text)
+    c = s["compound"]
+    return {"compound": round(c,4), "pos": round(s["pos"],4), "neu": round(s["neu"],4),
+            "neg": round(s["neg"],4), "label": "positive" if c>=0.05 else "negative" if c<=-0.05 else "neutral"}
 
 
-def batch_tfidf_keywords(texts: list, top_n: int = 10) -> list:
-    """Fix 5: TF-IDF keyword extraction across the batch."""
-    if len(texts) < 2:
-        return [[] for _ in texts]
+def batch_tfidf_keywords(texts: list, top_n=10) -> list:
+    if len(texts) < 2: return [[] for _ in texts]
     try:
-        vec = TfidfVectorizer(
-            max_features=500,
-            stop_words="english",
-            ngram_range=(1, 2),
-        )
+        vec    = TfidfVectorizer(max_features=500, stop_words="english", ngram_range=(1,2))
         matrix = vec.fit_transform(texts)
         terms  = vec.get_feature_names_out()
-        results = []
-        for row in matrix:
-            scores  = zip(terms, row.toarray()[0])
-            top     = sorted(scores, key=lambda x: x[1], reverse=True)[:top_n]
-            results.append([t for t, s in top if s > 0])
-        return results
+        return [[t for t,s in sorted(zip(terms, row.toarray()[0]), key=lambda x:x[1], reverse=True)[:top_n] if s>0]
+                for row in matrix]
     except Exception:
         return [[] for _ in texts]
 
 
 def get_topics_bertopic(texts: list) -> list:
-    """Fix 6: BERTopic instead of LDA."""
+    """P9: BERTopic with small-dataset UMAP/HDBSCAN config — fixes topics=0."""
     if not BERTOPIC_AVAILABLE or len(texts) < 5:
         return []
     try:
-        model  = BERTopic(verbose=False, nr_topics="auto")
+        from umap import UMAP
+        from hdbscan import HDBSCAN
+
+        n = len(texts)
+        umap_model = UMAP(
+            n_neighbors  = min(n - 1, 15),
+            n_components = min(n - 1, 5),
+            min_dist     = 0.0,
+            metric       = "cosine",
+            random_state = 42
+        )
+        hdbscan_model = HDBSCAN(
+            min_cluster_size = 2,
+            min_samples      = 1,
+            prediction_data  = True
+        )
+        model = BERTopic(
+            umap_model     = umap_model,
+            hdbscan_model  = hdbscan_model,
+            verbose        = False,
+            nr_topics      = "auto",
+            min_topic_size = 2
+        )
         topics, _ = model.fit_transform(texts)
-        info   = model.get_topic_info()
-        result = []
+        info      = model.get_topic_info()
+        result    = []
         for _, row in info[info["Topic"] != -1].head(5).iterrows():
             words = [w for w, _ in model.get_topic(row["Topic"])]
             result.append({"topic_id": int(row["Topic"]), "words": words[:5]})
         return result
     except Exception as e:
-        log.warning(f"BERTopic failed: {e}")
+        log.warning(f"BERTopic failed: {e}")  # now shows real error
         return []
 
 
-def detect_events(tweets: list, top_n: int = 5) -> list:
-    """Fix 7: freq_ratio replaces spike_score."""
-    all_keywords = []
-    for tweet in tweets:
-        all_keywords.extend(tweet.get("keywords", []))
-    freq  = Counter(all_keywords)
+def detect_events(tweets: list, top_n=5) -> list:
+    all_kw = []
+    for t in tweets: all_kw.extend(t.get("keywords", []))
+    freq  = Counter(all_kw)
     total = sum(freq.values()) or 1
-    return [
-        {"keyword": kw, "count": cnt, "freq_ratio": round(cnt / total, 4)}  # Fix 7
-        for kw, cnt in freq.most_common(top_n)
-    ]
+    return [{"keyword": kw, "count": cnt, "freq_ratio": round(cnt/total, 4)}
+            for kw, cnt in freq.most_common(top_n)]
 
 
 def get_engagement(tweet: dict) -> dict:
@@ -256,91 +223,63 @@ def get_engagement(tweet: dict) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAIN — Run full preprocessing on a processed JSON file
+# MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 
-def preprocess_file(filepath: str, output_dir: str = "data/nlp") -> str:
+def preprocess_file(filepath: str, output_dir: str = "data/nlp"):
     with open(filepath, encoding="utf-8") as f:
         data = json.load(f)
 
     original_count = len(data.get("tweets", []))
     tweets = data.get("tweets", [])
 
-    # Stage 2 — Filter
-    tweets = [t for t in tweets if is_valid(t)]
+    tweets       = [t for t in tweets if is_valid(t)]
     after_filter = len(tweets)
+    tweets       = deduplicate(tweets)
+    after_dedup  = len(tweets)
 
-    # Stage 3 — Deduplicate
-    tweets = deduplicate(tweets)
-    after_dedup = len(tweets)
-
+    # P4: handle None return
     if not tweets:
-        log.warning(f"  {original_count} → 0 tweets after filtering — skipping file")
-        return None   # Fix 3: don't write empty JSON
+        log.warning(f"  {original_count} → 0 tweets after filtering — skipping {filepath}")
+        return None
 
-    # ── Pre-extraction (hashtags, mentions, emojis, URLs) ────────────────────
     for tweet in tweets:
         raw = tweet.get("text", "")
-        tweet["hashtags"] = extract_hashtags(raw)
-        tweet["mentions"] = extract_mentions(raw)
-        tweet["emojis"]   = extract_emojis(raw)   # Fix 8
-        tweet["urls"]     = extract_urls(raw)
+        tweet["hashtags"]     = extract_hashtags(raw)
+        tweet["mentions"]     = extract_mentions(raw)
+        tweet["emojis"]       = extract_emojis(raw)
+        tweet["urls"]         = extract_urls(raw)
         tweet["cleaned_text"] = clean_text(raw)
 
-    # ── spaCy batch (Fix 5 nlp.pipe) ─────────────────────────────────────────
     cleaned_texts = [t["cleaned_text"] for t in tweets]
-    docs = list(tqdm(
-        nlp.pipe(cleaned_texts, batch_size=50),
-        total=len(cleaned_texts),
-        desc="  spaCy NER",
-        leave=False
-    ))
+    docs = list(tqdm(nlp.pipe(cleaned_texts, batch_size=50), total=len(cleaned_texts), desc="  spaCy NER", leave=False))
 
     for tweet, doc in zip(tweets, docs):
-        # Fix 2: tokens = raw surface forms (lowercased, alpha, no stopwords)
-        tweet["tokens"] = [
-            token.text.lower()
-            for token in doc
-            if token.is_alpha and token.text.lower() not in STOPWORDS
-        ]
-        # Fix 2: lemmatized_tokens = lemma forms (now distinct from tokens)
-        tweet["lemmatized_tokens"] = [
-            token.lemma_.lower()
-            for token in doc
-            if token.is_alpha and token.lemma_.lower() not in STOPWORDS
-        ]
-        entities = [{"text": ent.text, "label": ent.label_} for ent in doc.ents]
-        tweet["entities"]    = entities
-        tweet["entity_freq"] = dict(Counter([e["text"] for e in entities]))
-        tweet["engagement"]  = get_engagement(tweet)
-
-        # Normalize datetime
+        tweet["tokens"]            = [t.text.lower() for t in doc if t.is_alpha and t.text.lower() not in STOPWORDS]
+        tweet["lemmatized_tokens"] = [t.lemma_.lower() for t in doc if t.is_alpha and t.lemma_.lower() not in STOPWORDS]
+        entities                   = [{"text": e.text, "label": e.label_} for e in doc.ents]
+        tweet["entities"]          = entities
+        tweet["entity_freq"]       = dict(Counter([e["text"] for e in entities]))
+        tweet["engagement"]        = get_engagement(tweet)
         raw_date = tweet.get("createdAt", "")
         try:
-            dt = datetime.strptime(raw_date, "%a %b %d %H:%M:%S %z %Y")
-            tweet["createdAt"] = dt.isoformat()
+            tweet["createdAt"] = datetime.strptime(raw_date, "%a %b %d %H:%M:%S %z %Y").isoformat()
         except (ValueError, TypeError):
             pass
 
-    # ── VADER sentiment (fast, per-tweet) ────────────────────────────────────
     for tweet in tqdm(tweets, desc="  VADER sentiment", leave=False):
         tweet["sentiment"] = {"vader": get_vader_sentiment(tweet["cleaned_text"])}
 
-    # ── RoBERTa sentiment batch (Fix 3 + Fix 4) ──────────────────────────────
     roberta_results = batch_roberta_sentiment(cleaned_texts)
     for tweet, roberta in zip(tweets, roberta_results):
         tweet["sentiment"]["roberta"]     = roberta
         tweet["sentiment"]["final_label"] = roberta["label"]
 
-    # ── TF-IDF keywords batch (Fix 5) ────────────────────────────────────────
     tfidf_keywords = batch_tfidf_keywords(cleaned_texts)
     for tweet, kws in zip(tweets, tfidf_keywords):
         tweet["keywords"] = kws
 
-    # ── BERTopic (Fix 6) ─────────────────────────────────────────────────────
     topics = get_topics_bertopic(cleaned_texts)
-
-    # ── Event detection (Fix 7: freq_ratio) ──────────────────────────────────
     events = detect_events(tweets)
 
     result = {
@@ -364,20 +303,39 @@ def preprocess_file(filepath: str, output_dir: str = "data/nlp") -> str:
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
 
-    log.info(f"  ✓ {original_count} → {len(tweets)} tweets after preprocessing")
-    log.info(f"  ✓ Saved → {out_path}")
+    log.info(f"  ✓ {original_count} → {len(tweets)} tweets | Saved → {out_path}")
+
+    # P1+P2+P3: DB auto-write — inside preprocess_file(), correct indentation
+    # P8: skip if SKIP_DB_WRITE=1 (Colab)
+    if not SKIP_DB_WRITE:
+        # P3: check if this nlp_file already ingested
+        nlp_fname = os.path.basename(out_path)
+        with get_conn() as conn:
+            existing = conn.execute(
+                "SELECT id FROM fetch_runs WHERE nlp_file = ?", (nlp_fname,)
+            ).fetchone()
+            if existing:
+                log.warning(f"  Already ingested {nlp_fname} — skipping DB write")
+            else:
+                query_id = upsert_query(conn, result["metadata"].get("query", "unknown"))
+                run_id   = insert_fetch_run(conn, query_id, result["metadata"],
+                                            processed_file=os.path.basename(filepath),
+                                            nlp_file=nlp_fname)
+                insert_tweets(conn, run_id, data.get("tweets", []),
+                              default_source=result["metadata"].get("apiSource"))
+                insert_hashtags(conn, run_id, data.get("tweets", []))
+                insert_nlp(conn, run_id, tweets)
+                insert_entities(conn, run_id, tweets)
+                insert_keywords(conn, run_id, tweets)
+                insert_topics(conn, run_id, topics)
+                insert_events(conn, run_id, events)
+                log.info(f"  ✓ Written to pipeline.db")
+
     return out_path
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
-
     processed_dir = "data/processed"
-    # Walk subdirectories too (date-based folders)
     files = []
     for root, dirs, filenames in os.walk(processed_dir):
         for f in filenames:
@@ -387,21 +345,7 @@ if __name__ == "__main__":
     log.info(f"Found {len(files)} processed files")
     for fp in tqdm(files, desc="Files"):
         log.info(f"Processing: {fp}")
-        preprocess_file(fp)
-
-
-
-
-        with get_conn() as conn:
-        query_id = upsert_query(conn, result["metadata"]["query"])
-        run_id   = insert_fetch_run(conn, query_id, result["metadata"],
-                                    nlp_file=os.path.basename(out_path))
-        insert_tweets(conn, run_id, data.get("tweets", []),
-                      default_source=result["metadata"].get("apiSource"))
-        insert_hashtags(conn, run_id, data.get("tweets", []))
-        insert_nlp(conn, run_id, tweets)
-        insert_entities(conn, run_id, tweets)
-        insert_keywords(conn, run_id, tweets)
-        insert_topics(conn, run_id, topics)
-        insert_events(conn, run_id, events)
-    log.info(f"  ✓ Written to pipeline.db")
+        result = preprocess_file(fp)
+        # P4: handle None return in __main__
+        if result is None:
+            log.warning(f"  Skipped (no tweets after filtering): {fp}")

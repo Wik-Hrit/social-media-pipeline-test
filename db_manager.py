@@ -1,9 +1,8 @@
-""
 """
 db_manager.py
 SQLite database layer — Social Media Acquisition Pipeline
 Multimodal Broadcast Analytics System, IIT Guwahati
- 
+
 9 Tables:
     1. queries       — unique query strings
     2. fetch_runs    — one per processed JSON file
@@ -15,28 +14,22 @@ Multimodal Broadcast Analytics System, IIT Guwahati
     8. topics        — BERTopic output per run
     9. events        — keyword frequency events per run
 """
- 
+
 import sqlite3
 import json
 import logging
 from contextlib import contextmanager
 from datetime import datetime
- 
+
 log = logging.getLogger(__name__)
- 
 DB_PATH = "pipeline.db"
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-# Connection
-# ─────────────────────────────────────────────────────────────────────────────
- 
+
+
 @contextmanager
 def get_conn(db_path: str = DB_PATH):
-    """Context manager — auto-commits, auto-closes."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")   # safer writes
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     try:
         yield conn
@@ -46,25 +39,16 @@ def get_conn(db_path: str = DB_PATH):
         raise
     finally:
         conn.close()
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-# Schema — 9 Tables
-# ─────────────────────────────────────────────────────────────────────────────
- 
+
+
 def init_db(db_path: str = DB_PATH):
-    """Create all 9 tables and indexes if they don't exist."""
     with get_conn(db_path) as conn:
         conn.executescript("""
- 
-            -- 1. Unique query strings
             CREATE TABLE IF NOT EXISTS queries (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 query_text  TEXT    NOT NULL UNIQUE,
                 created_at  TEXT    NOT NULL
             );
- 
-            -- 2. One row per processed JSON file (one query, one run)
             CREATE TABLE IF NOT EXISTS fetch_runs (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
                 query_id         INTEGER NOT NULL REFERENCES queries(id),
@@ -80,8 +64,6 @@ def init_db(db_path: str = DB_PATH):
                 processed_file   TEXT,
                 nlp_file         TEXT
             );
- 
-            -- 3. Base tweet fields from data/processed/
             CREATE TABLE IF NOT EXISTS tweets (
                 id               TEXT    PRIMARY KEY,
                 fetch_run_id     INTEGER NOT NULL REFERENCES fetch_runs(id),
@@ -99,8 +81,6 @@ def init_db(db_path: str = DB_PATH):
                 is_retweet       INTEGER DEFAULT 0,
                 source           TEXT
             );
- 
-            -- 4. NLP enrichment from data/nlp/ (1:1 with tweets, only preprocessed)
             CREATE TABLE IF NOT EXISTS tweet_nlp (
                 tweet_id          TEXT    PRIMARY KEY REFERENCES tweets(id),
                 fetch_run_id      INTEGER NOT NULL REFERENCES fetch_runs(id),
@@ -126,8 +106,6 @@ def init_db(db_path: str = DB_PATH):
                 eng_views         INTEGER,
                 eng_bookmarks     INTEGER
             );
- 
-            -- 5. Named entities — normalized for aggregation queries
             CREATE TABLE IF NOT EXISTS entities (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 tweet_id     TEXT    NOT NULL REFERENCES tweets(id),
@@ -136,32 +114,24 @@ def init_db(db_path: str = DB_PATH):
                 entity_label TEXT    NOT NULL,
                 frequency    INTEGER DEFAULT 1
             );
- 
-            -- 6. Hashtags — one row per hashtag per tweet
             CREATE TABLE IF NOT EXISTS hashtags (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 tweet_id     TEXT    NOT NULL REFERENCES tweets(id),
                 fetch_run_id INTEGER NOT NULL REFERENCES fetch_runs(id),
                 hashtag      TEXT    NOT NULL
             );
- 
-            -- 7. Keywords — one row per TF-IDF keyword per tweet
             CREATE TABLE IF NOT EXISTS keywords (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 tweet_id     TEXT    NOT NULL REFERENCES tweets(id),
                 fetch_run_id INTEGER NOT NULL REFERENCES fetch_runs(id),
                 keyword      TEXT    NOT NULL
             );
- 
-            -- 8. BERTopic output — file-level topics
             CREATE TABLE IF NOT EXISTS topics (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 fetch_run_id INTEGER NOT NULL REFERENCES fetch_runs(id),
                 topic_id     INTEGER NOT NULL,
                 words        TEXT    DEFAULT '[]'
             );
- 
-            -- 9. Keyword frequency events — file-level
             CREATE TABLE IF NOT EXISTS events (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 fetch_run_id INTEGER NOT NULL REFERENCES fetch_runs(id),
@@ -169,116 +139,77 @@ def init_db(db_path: str = DB_PATH):
                 count        INTEGER NOT NULL,
                 freq_ratio   REAL
             );
- 
-            -- Indexes for common research queries
-            CREATE INDEX IF NOT EXISTS idx_tweets_run       ON tweets(fetch_run_id);
-            CREATE INDEX IF NOT EXISTS idx_tweets_author    ON tweets(author);
-            CREATE INDEX IF NOT EXISTS idx_tweets_created   ON tweets(created_at);
-            CREATE INDEX IF NOT EXISTS idx_nlp_label        ON tweet_nlp(final_label);
-            CREATE INDEX IF NOT EXISTS idx_nlp_vader        ON tweet_nlp(vader_compound);
-            CREATE INDEX IF NOT EXISTS idx_entities_text    ON entities(entity_text);
-            CREATE INDEX IF NOT EXISTS idx_entities_label   ON entities(entity_label);
-            CREATE INDEX IF NOT EXISTS idx_hashtags_tag     ON hashtags(hashtag);
-            CREATE INDEX IF NOT EXISTS idx_keywords_kw      ON keywords(keyword);
-            CREATE INDEX IF NOT EXISTS idx_runs_query       ON fetch_runs(query_id);
- 
+            CREATE INDEX IF NOT EXISTS idx_tweets_run     ON tweets(fetch_run_id);
+            CREATE INDEX IF NOT EXISTS idx_tweets_author  ON tweets(author);
+            CREATE INDEX IF NOT EXISTS idx_tweets_created ON tweets(created_at);
+            CREATE INDEX IF NOT EXISTS idx_nlp_label      ON tweet_nlp(final_label);
+            CREATE INDEX IF NOT EXISTS idx_nlp_vader      ON tweet_nlp(vader_compound);
+            CREATE INDEX IF NOT EXISTS idx_entities_text  ON entities(entity_text);
+            CREATE INDEX IF NOT EXISTS idx_entities_label ON entities(entity_label);
+            CREATE INDEX IF NOT EXISTS idx_hashtags_tag   ON hashtags(hashtag);
+            CREATE INDEX IF NOT EXISTS idx_keywords_kw    ON keywords(keyword);
+            CREATE INDEX IF NOT EXISTS idx_runs_query     ON fetch_runs(query_id);
         """)
     log.info(f"Database initialized → {db_path} (9 tables)")
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
- 
+
+
 def _j(value) -> str:
-    """Serialize list/dict to JSON string. Returns '[]' for None."""
-    if value is None:
-        return "[]"
+    if value is None: return "[]"
     return json.dumps(value, ensure_ascii=False)
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-# Insert Functions
-# ─────────────────────────────────────────────────────────────────────────────
- 
+
+
 def upsert_query(conn, query_text: str) -> int:
-    """Insert query if not exists. Returns query id."""
     conn.execute(
         "INSERT OR IGNORE INTO queries (query_text, created_at) VALUES (?, ?)",
         (query_text, datetime.now().isoformat())
     )
-    row = conn.execute(
-        "SELECT id FROM queries WHERE query_text = ?", (query_text,)
-    ).fetchone()
-    return row["id"]
- 
- 
+    return conn.execute("SELECT id FROM queries WHERE query_text = ?", (query_text,)).fetchone()["id"]
+
+
 def insert_fetch_run(conn, query_id: int, metadata: dict,
-                     processed_file: str = None, nlp_file: str = None) -> int:
-    """Insert fetch run. Returns run id."""
+                     processed_file=None, nlp_file=None) -> int:
     cur = conn.execute("""
         INSERT INTO fetch_runs
             (query_id, fetched_at, api_source, tweet_count,
              preprocessed_at, original_count, after_filter,
-             after_dedup, final_count, device,
-             processed_file, nlp_file)
+             after_dedup, final_count, device, processed_file, nlp_file)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        query_id,
-        metadata.get("fetchedAt"),
-        metadata.get("apiSource"),
-        metadata.get("tweetCount"),
-        metadata.get("preprocessedAt"),
-        metadata.get("originalCount"),
-        metadata.get("afterFilter"),
-        metadata.get("afterDedup"),
-        metadata.get("finalCount"),
-        metadata.get("device"),
-        processed_file,
-        nlp_file,
-    ))
+    """, (query_id, metadata.get("fetchedAt"), metadata.get("apiSource"),
+          metadata.get("tweetCount"), metadata.get("preprocessedAt"),
+          metadata.get("originalCount"), metadata.get("afterFilter"),
+          metadata.get("afterDedup"), metadata.get("finalCount"),
+          metadata.get("device"), processed_file, nlp_file))
     return cur.lastrowid
- 
- 
-def insert_tweets(conn, fetch_run_id: int, tweets: list,
-                  default_source: str = None) -> int:
-    """Insert base tweet fields. OR IGNORE skips duplicates."""
+
+
+def insert_tweets(conn, fetch_run_id: int, tweets: list, default_source=None) -> int:
     inserted = 0
     for t in tweets:
         source = t.get("source") or default_source
         try:
-            conn.execute("""
+            cur = conn.execute("""
                 INSERT OR IGNORE INTO tweets
                     (id, fetch_run_id, text, created_at, author,
                      author_followers, retweet_count, like_count,
                      reply_count, view_count, lang, url,
                      is_reply, is_retweet, source)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                str(t.get("id")),
-                fetch_run_id,
-                t.get("text"),
-                t.get("createdAt"),
-                t.get("author"),
-                t.get("authorFollowers"),
-                t.get("retweetCount", 0),
-                t.get("likeCount", 0),
-                t.get("replyCount", 0),
-                t.get("viewCount"),
-                t.get("lang"),
-                t.get("url"),
-                int(bool(t.get("isReply", False))),
-                int(bool(t.get("isRetweet", False))),
-                source,
-            ))
-            inserted += 1
+            """, (str(t.get("id")), fetch_run_id, t.get("text"), t.get("createdAt"),
+                  t.get("author"), t.get("authorFollowers"),
+                  t.get("retweetCount", 0), t.get("likeCount", 0),
+                  t.get("replyCount", 0), t.get("viewCount"),
+                  t.get("lang"), t.get("url"),
+                  int(bool(t.get("isReply", False))),
+                  int(bool(t.get("isRetweet", False))), source))
+            # D2: use rowcount > 0 — OR IGNORE skipped rows don't count
+            if cur.rowcount > 0:
+                inserted += 1
         except Exception as e:
             log.warning(f"Tweet insert failed {t.get('id')}: {e}")
     return inserted
- 
- 
+
+
 def insert_nlp(conn, fetch_run_id: int, tweets: list) -> int:
-    """Insert NLP enrichment. OR REPLACE updates if reprocessed."""
     inserted = 0
     for t in tweets:
         tweet_id   = str(t.get("id"))
@@ -296,116 +227,97 @@ def insert_nlp(conn, fetch_run_id: int, tweets: list) -> int:
                      roberta_label, roberta_neg, roberta_neu, roberta_pos, final_label,
                      eng_likes, eng_retweets, eng_replies, eng_views, eng_bookmarks)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                tweet_id, fetch_run_id,
-                t.get("cleaned_text"),
-                _j(t.get("tokens", [])),
-                _j(t.get("lemmatized_tokens", [])),
-                _j(t.get("mentions", [])),
-                _j(t.get("emojis", [])),
-                _j(t.get("urls", [])),
-                vader.get("compound"),
-                vader.get("pos"),
-                vader.get("neu"),
-                vader.get("neg"),
-                vader.get("label"),
-                roberta.get("label"),
-                rob_scores.get("negative"),
-                rob_scores.get("neutral"),
-                rob_scores.get("positive"),
-                sentiment.get("final_label"),
-                eng.get("likes", 0),
-                eng.get("retweets", 0),
-                eng.get("replies", 0),
-                eng.get("views"),
-                eng.get("bookmarks"),
-            ))
+            """, (tweet_id, fetch_run_id, t.get("cleaned_text"),
+                  _j(t.get("tokens", [])), _j(t.get("lemmatized_tokens", [])),
+                  _j(t.get("mentions", [])), _j(t.get("emojis", [])), _j(t.get("urls", [])),
+                  vader.get("compound"), vader.get("pos"), vader.get("neu"), vader.get("neg"), vader.get("label"),
+                  roberta.get("label"), rob_scores.get("negative"), rob_scores.get("neutral"), rob_scores.get("positive"),
+                  sentiment.get("final_label"),
+                  eng.get("likes", 0), eng.get("retweets", 0), eng.get("replies", 0),
+                  eng.get("views"), eng.get("bookmarks")))
             inserted += 1
         except Exception as e:
             log.warning(f"NLP insert failed {tweet_id}: {e}")
     return inserted
- 
- 
+
+
 def insert_entities(conn, fetch_run_id: int, tweets: list) -> int:
-    """Insert named entities — one row per entity per tweet."""
+    """D1: Use seen set — prevents duplicate entity rows."""
     inserted = 0
     for t in tweets:
         tweet_id    = str(t.get("id"))
         entity_freq = t.get("entity_freq", {})
+        seen        = set()   # D1: dedup per tweet
         for ent in t.get("entities", []):
+            key = (tweet_id, ent.get("text",""), ent.get("label",""))
+            if key in seen:
+                continue
+            seen.add(key)
             try:
                 conn.execute("""
                     INSERT INTO entities
                         (tweet_id, fetch_run_id, entity_text, entity_label, frequency)
                     VALUES (?, ?, ?, ?, ?)
-                """, (
-                    tweet_id, fetch_run_id,
-                    ent.get("text", ""),
-                    ent.get("label", ""),
-                    entity_freq.get(ent.get("text", ""), 1)
-                ))
+                """, (tweet_id, fetch_run_id,
+                      ent.get("text",""), ent.get("label",""),
+                      entity_freq.get(ent.get("text",""), 1)))
                 inserted += 1
             except Exception as e:
                 log.warning(f"Entity insert failed: {e}")
     return inserted
- 
- 
+
+
 def insert_hashtags(conn, fetch_run_id: int, tweets: list) -> int:
-    """Insert hashtags — one row per hashtag per tweet."""
     inserted = 0
     for t in tweets:
         tweet_id = str(t.get("id"))
+        seen = set()   # D3: dedup per tweet
         for tag in t.get("hashtags", []):
-            if tag:
+            if tag and tag.lower() not in seen:
+                seen.add(tag.lower())
                 try:
                     conn.execute(
                         "INSERT INTO hashtags (tweet_id, fetch_run_id, hashtag) VALUES (?, ?, ?)",
-                        (tweet_id, fetch_run_id, tag.lower())
-                    )
+                        (tweet_id, fetch_run_id, tag.lower()))
                     inserted += 1
                 except Exception as e:
                     log.warning(f"Hashtag insert failed: {e}")
     return inserted
- 
- 
+
+
 def insert_keywords(conn, fetch_run_id: int, tweets: list) -> int:
-    """Insert TF-IDF keywords — one row per keyword per tweet."""
     inserted = 0
     for t in tweets:
         tweet_id = str(t.get("id"))
+        seen = set()   # D4: dedup per tweet
         for kw in t.get("keywords", []):
-            if kw:
+            if kw and kw not in seen:
+                seen.add(kw)
                 try:
                     conn.execute(
                         "INSERT INTO keywords (tweet_id, fetch_run_id, keyword) VALUES (?, ?, ?)",
-                        (tweet_id, fetch_run_id, kw)
-                    )
+                        (tweet_id, fetch_run_id, kw))
                     inserted += 1
                 except Exception as e:
                     log.warning(f"Keyword insert failed: {e}")
     return inserted
- 
- 
+
+
 def insert_topics(conn, fetch_run_id: int, topics: list) -> int:
-    """Insert BERTopic output for a fetch run."""
     inserted = 0
     for topic in topics:
         conn.execute(
             "INSERT INTO topics (fetch_run_id, topic_id, words) VALUES (?, ?, ?)",
-            (fetch_run_id, topic.get("topic_id"), _j(topic.get("words", [])))
-        )
+            (fetch_run_id, topic.get("topic_id"), _j(topic.get("words", []))))
         inserted += 1
     return inserted
- 
- 
+
+
 def insert_events(conn, fetch_run_id: int, events: list) -> int:
-    """Insert keyword frequency events for a fetch run."""
     inserted = 0
     for event in events:
         conn.execute(
             "INSERT INTO events (fetch_run_id, keyword, count, freq_ratio) VALUES (?, ?, ?, ?)",
-            (fetch_run_id, event.get("keyword"), event.get("count"), event.get("freq_ratio"))
-        )
+            (fetch_run_id, event.get("keyword"), event.get("count"), event.get("freq_ratio")))
         inserted += 1
     return inserted
-""

@@ -1,4 +1,3 @@
-
 # Social Media Acquisition Pipeline
 
 Twitter data collection, NLP preprocessing, and structured SQLite storage pipeline for the Multimodal Broadcast Analytics System, IIT Guwahati.
@@ -413,4 +412,4 @@ Full pinned versions in `requirements.txt`.
 **Branch:** `twitter_acquisition`
 **Group:** Multimodal Broadcast Analytics, IIT Guwahati
 **Supervisor:** Prof. Prithwijit Guha
-**Assigned by:** Shlok Verman (M.Tech Scholar, IIT Guwahati)
+**Assigned and Alloted to :** Shlok Verman (M.Tech Scholar, IIT Guwahati)

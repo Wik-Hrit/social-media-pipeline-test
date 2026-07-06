@@ -43,11 +43,6 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 log = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
 
 try:
     from bertopic import BERTopic
@@ -335,6 +330,11 @@ def preprocess_file(filepath: str, output_dir: str = "data/nlp"):
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
     processed_dir = "data/processed"
     files = []
     for root, dirs, filenames in os.walk(processed_dir):

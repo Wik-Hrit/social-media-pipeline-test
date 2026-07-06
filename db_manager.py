@@ -24,6 +24,12 @@ from datetime import datetime
 log = logging.getLogger(__name__)
 DB_PATH = "pipeline.db"
 
+# Semantically meaningful NER labels — filters out CARDINAL, ORDINAL, QUANTITY etc.
+SEMANTIC_ENTITY_LABELS = {
+    "PERSON", "ORG", "GPE", "LOC", "EVENT",
+    "PRODUCT", "WORK_OF_ART", "LAW", "LANGUAGE", "NORP"
+}
+
 
 @contextmanager
 def get_conn(db_path: str = DB_PATH):
@@ -251,6 +257,8 @@ def insert_entities(conn, fetch_run_id: int, tweets: list) -> int:
         for ent in t.get("entities", []):
             key = (tweet_id, ent.get("text",""), ent.get("label",""))
             if key in seen:
+                continue
+            if ent.get("label", "") not in SEMANTIC_ENTITY_LABELS:
                 continue
             seen.add(key)
             try:

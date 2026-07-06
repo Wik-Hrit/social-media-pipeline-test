@@ -249,16 +249,34 @@ def chart_agreement(agreement: dict):
 
 def chart_volume(volume: dict):
     import pandas as pd
+    from datetime import datetime
+
+    def parse_date(d: str):
+        """Handle both YYYY-MM-DD and 'Fri Jun 05' formats."""
+        d = d.strip()
+        for fmt in ("%Y-%m-%d", "%a %b %d", "%b %d"):
+            try:
+                dt = datetime.strptime(d, fmt)
+                # if no year parsed, assume 2026
+                if dt.year == 1900:
+                    dt = dt.replace(year=2026)
+                return dt
+            except ValueError:
+                continue
+        return None
 
     fig, ax = plt.subplots(figsize=(16, 6))
 
     for idx, (query, points) in enumerate(volume.items()):
         if not points:
             continue
-        # sort by date ascending before plotting
-        points_sorted = sorted(points, key=lambda p: p["date"])
-        dates  = pd.to_datetime([p["date"] for p in points_sorted])
-        counts = [p["count"] for p in points_sorted]
+        parsed = [(parse_date(p["date"]), p["count"]) for p in points]
+        parsed = [(d, c) for d, c in parsed if d is not None]
+        if not parsed:
+            continue
+        parsed.sort(key=lambda x: x[0])
+        dates  = [x[0] for x in parsed]
+        counts = [x[1] for x in parsed]
         color  = PALETTE[idx % len(PALETTE)]
         ax.plot(dates, counts, marker="o", label=short(query, 22),
                 color=color, linewidth=1.8, markersize=4)
@@ -268,7 +286,6 @@ def chart_volume(volume: dict):
     ax.set_title("Tweet Volume Over Time per Query", fontsize=14, fontweight="bold")
     ax.legend(fontsize=8, loc="upper left", bbox_to_anchor=(1, 1))
 
-    # readable date ticks — auto-locator handles crowding
     import matplotlib.dates as mdates
     ax.xaxis.set_major_locator(mdates.AutoDateLocator())
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b %Y"))

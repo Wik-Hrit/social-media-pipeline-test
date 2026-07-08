@@ -1,415 +1,236 @@
-# Social Media Acquisition Pipeline
+# Social Media NLP Pipeline
+**Multimodal Broadcast Analytics System — IIT Guwahati**
 
-Twitter data collection, NLP preprocessing, and structured SQLite storage pipeline for the Multimodal Broadcast Analytics System, IIT Guwahati.
+A complete end-to-end pipeline for acquiring, preprocessing, and analysing Twitter/X data across multiple query topics using NLP techniques including sentiment analysis (VADER + RoBERTa), named entity recognition (spaCy), topic modelling (BERTopic), and keyword extraction (TF-IDF).
 
-Built as part of a research internship under Prof. Prithwijit Guha, this pipeline supports multi-source news summarization research by collecting, cleaning, enriching, and storing Twitter data at scale.
+---
+
+## Pipeline Overview
+
+```
+queries.txt
+    │
+    ▼
+fetch_tweets.py / paginator.py      ← Twikit (primary) + twitterapi.io (fallback)
+    │
+    ▼
+save_raw.py → data/raw/             ← Raw API response
+    │
+    ▼
+save_processed.py → data/processed/ ← Cleaned tweet fields
+    │
+    ▼
+preprocess.py → data/nlp/           ← NLP enrichment (spaCy, VADER, RoBERTa, BERTopic, TF-IDF)
+    │
+    ▼
+ingest.py → pipeline.db             ← SQLite (9 tables)
+    │
+    ▼
+analysis.py → data/analysis/        ← JSON results
+    │
+    ▼
+visualise.py → data/charts/         ← 7 charts (PNG)
+sentiment_report.py → report.md     ← Auto-generated insight report
+pipeline_stats.py                   ← Health dashboard
+```
+
+---
+
+## Setup
+
+### 1. Clone the repo
+```bash
+git clone https://github.com/Wik-Hrit/social-media-pipeline-test.git
+cd social-media-pipeline-test
+git checkout twitter_acquisition
+```
+
+### 2. Create virtual environment
+```bash
+python -m venv venv
+venv\Scripts\activate        # Windows
+# source venv/bin/activate   # Linux/Mac
+```
+
+### 3. Install dependencies
+```bash
+pip install -r requirements.txt
+python -m spacy download en_core_web_sm
+```
+
+### 4. Configure environment
+Create a `.env` file in the root directory:
+```
+TWITTER_API_KEY=your_twitterapi_io_key
+TWITTER_USERNAME=your_twitter_username
+TWITTER_EMAIL=your_twitter_email
+TWITTER_PASSWORD=your_twitter_password
+```
+
+### 5. Add queries
+Edit `queries.txt` — one query per line:
+```
+Delhi Heatwave
+OpenAI
+NEET 2026
+IPL 2026
+```
+
+---
+
+## Running the Pipeline
+
+### Full acquisition run
+```bash
+python main.py
+```
+Fetches tweets for all queries in `queries.txt`. Runs on a scheduler (`RUN_INTERVAL_HOURS` in `config.py`).
+
+### Preprocess NLP
+```bash
+python preprocess.py
+```
+Runs spaCy NER, VADER sentiment, RoBERTa sentiment, BERTopic, TF-IDF on all processed files.
+
+### Ingest to database
+```bash
+python ingest.py
+```
+Migrates all `data/processed/` and `data/nlp/` JSON files into `pipeline.db`.
+
+### Verify database
+```bash
+python verify_db.py
+```
+Prints row counts for all 9 tables + entity label distribution.
+
+### Run analysis
+```bash
+python analysis.py
+```
+Generates `data/analysis/analysis_results.json` with sentiment, entities, hashtags, keywords, engagement, and volume data.
+
+### Generate charts
+```bash
+python visualise.py
+```
+Saves 7 charts to `data/charts/`.
+
+### Health dashboard
+```bash
+python pipeline_stats.py
+```
+One-command overview of the entire pipeline state.
+
+### Auto insight report
+```bash
+python sentiment_report.py
+```
+Generates `data/analysis/report.md` with human-readable findings.
+
+### Export to CSV
+```bash
+python export_csv.py
+```
+Exports NLP data grouped by topic to `data/csv/`.
+
+---
+
+## Database Schema (9 Tables)
+
+| Table | Description |
+|-------|-------------|
+| `queries` | Unique query strings (24) |
+| `fetch_runs` | One row per processed JSON file (148) |
+| `tweets` | Base tweet fields — text, author, engagement (1,423) |
+| `tweet_nlp` | NLP enrichment — sentiment, tokens, entities (1,121) |
+| `entities` | Named entities with NER label and frequency (12,320) |
+| `hashtags` | One row per hashtag per tweet (5,587) |
+| `keywords` | TF-IDF keywords per tweet (18,686) |
+| `topics` | BERTopic output per fetch run (290) |
+| `events` | Keyword frequency events (515) |
+
+---
+
+## NLP Stack
+
+| Task | Library | Model |
+|------|---------|-------|
+| Text cleaning | spaCy | `en_core_web_sm` |
+| Named Entity Recognition | spaCy | `en_core_web_sm` |
+| Sentiment (lexical) | VADER | `vaderSentiment` |
+| Sentiment (transformer) | HuggingFace | `cardiffnlp/twitter-roberta-base-sentiment` |
+| Topic modelling | BERTopic | UMAP + HDBSCAN |
+| Keyword extraction | scikit-learn | TF-IDF |
+
+**Final sentiment label** is determined by RoBERTa when confidence > 0.6, else VADER.
+
+---
+
+## Output Files
+
+```
+data/
+├── raw/           ← Raw API responses (JSON)
+├── processed/     ← Cleaned tweet data (JSON)
+├── nlp/           ← NLP-enriched data (JSON)
+├── analysis/
+│   ├── analysis_results.json
+│   └── report.md
+├── charts/
+│   ├── 01_sentiment_distribution.png
+│   ├── 02_wordcloud_keywords.png
+│   ├── 03_top_hashtags.png
+│   ├── 04_engagement_comparison.png
+│   ├── 05_source_distribution.png
+│   ├── 06_vader_roberta_agreement.png
+│   └── 07_tweet_volume_over_time.png
+└── csv/           ← Per-topic CSV exports
+```
+
+---
+
+## Configuration (`config.py`)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `QUERY_TYPE` | `"Latest"` | Latest or Top tweets |
+| `COUNT` | `20` | Tweets per page |
+| `MAX_PAGES` | `3` | Pagination pages (twitterapi.io only) |
+| `RUN_INTERVAL_HOURS` | `2` | Scheduler interval |
+| `MIN_CREDITS_THRESHOLD` | `500` | Credit warning threshold |
 
 ---
 
 ## Project Structure
 
 ```
-social-media-pipeline-test/
-├── twitter_client.py      # API connection layer (retry, timeout, exception handling)
-├── twikit_client.py       # Cookie-based fallback client (auto-activates on quota errors)
-├── fetch_tweets.py        # fetch_tweets(query, query_type, count) → (success, data, source)
-├── save_raw.py            # saves full raw API response
-├── save_processed.py      # saves clean structured data with source tracking
-├── error_handler.py       # handles all HTTP status codes
-├── paginator.py           # multi-page tweet collection with cursor-based deduplication
-├── filenamegen.py         # timestamped slug-based filename generation
-├── preprocess.py          # NLP preprocessing pipeline + auto-writes to pipeline.db
-├── db_manager.py          # SQLite schema (9 tables) + all insert/query functions
-├── ingest.py              # one-time migration — loads all data/nlp/ into pipeline.db
-├── export_csv.py          # exports data/nlp/ to per-topic CSVs in data/csv/
-├── verify_db.py           # quick sanity check — prints row counts for all 9 tables
-├── main.py                # pipeline entry point
-├── queries.txt            # add/remove queries here (duplicates auto-removed)
-├── pipeline.db            # SQLite database (not committed — generated on first ingest)
-├── data/
-│   ├── raw/               # raw API responses
-│   ├── processed/         # clean structured JSON with metadata
-│   ├── nlp/               # NLP-enriched output (tokens, sentiment, entities, keywords)
-│   └── csv/               # per-topic CSV exports (one file per query slug)
-└── .env                   # API keys and credentials (not committed)
+├── main.py              # Pipeline entry point + scheduler
+├── config.py            # Central configuration
+├── fetch_tweets.py      # Single-page fetch (Twikit + fallback)
+├── paginator.py         # Cursor-based pagination (twitterapi.io)
+├── twikit_client.py     # Cookie-based Twitter client
+├── twitter_client.py    # twitterapi.io HTTP client
+├── save_raw.py          # Save raw API response
+├── save_processed.py    # Save cleaned tweet fields
+├── preprocess.py        # Full NLP pipeline
+├── ingest.py            # DB migration from JSON files
+├── db_manager.py        # SQLite schema + insert functions
+├── analysis.py          # Compute analysis from DB → JSON
+├── visualise.py         # Generate charts from JSON
+├── pipeline_stats.py    # Health dashboard
+├── sentiment_report.py  # Auto insight report (Markdown)
+├── export_csv.py        # Export to CSV by topic
+├── verify_db.py         # DB sanity check
+├── error_handler.py     # HTTP response handler
+├── filenamegen.py       # Timestamped filename generator
+└── queries.txt          # Query topics (one per line)
 ```
 
 ---
 
-## How To Run
-
-### Local
-
-```bash
-# activate venv
-venv\Scripts\activate
-
-# install dependencies
-pip install -r requirements.txt
-python -m spacy download en_core_web_sm
-
-# add queries to queries.txt, then run acquisition
-python main.py
-
-# run NLP preprocessing (also auto-writes to pipeline.db)
-python preprocess.py
-
-# one-time migration of existing data/nlp/ files into pipeline.db
-python ingest.py
-
-# verify DB row counts
-python verify_db.py
-
-# export to CSV for review
-python export_csv.py
-```
-
-### Google Colab (recommended for preprocessing — GPU available)
-
-```python
-# Cell 1 — Clone repo
-!git clone -b twitter_acquisition https://github.com/Wik-Hrit/social-media-pipeline-test.git
-%cd social-media-pipeline-test
-
-# Cell 2 — Install dependencies
-!pip install -r requirements.txt
-!python -m spacy download en_core_web_sm
-
-# Cell 3 — NLTK downloads
-import nltk
-nltk.download('punkt')
-nltk.download('punkt_tab')
-nltk.download('stopwords')
-
-# Cell 4 — Run preprocessing (T4 GPU auto-detected)
-!python preprocess.py
-```
-
-> Set runtime to **T4 GPU** (Runtime → Change runtime type) before running for faster RoBERTa inference.
-
----
-
-## Configuration
-
-In `main.py`:
-
-```python
-QUERY_TYPE     = "Latest"  # or "Top"
-COUNT          = 20        # tweets per page
-USE_PAGINATION = True      # False for single page only
-```
-
-In `paginator.py`:
-
-```python
-max_pages = 3  # 3 pages × 20 tweets = 60 tweets per query
-```
-
----
-
-## Pipeline Flow
-
-```
-queries.txt
-    ↓
-main.py  (orchestrator — deduplicates queries, logging, timing)
-    ↓
-paginator.py  (cursor-based multi-page collection, seen_ids dedup)
-    ↓
-fetch_tweets.py
-    ├── Primary:  twikit_client.py  (cookie-based, free, no API key)
-    └── Fallback: twitter_client.py → twitterapi.io  (429/402/403 triggers fallback)
-    ↓
-error_handler.py  (status code handling, retry logic)
-    ↓
-save_raw.py       →  data/raw/        (full API response)
-save_processed.py →  data/processed/  (clean fields + metadata + source tracking)
-    ↓
-preprocess.py     →  data/nlp/        (NLP enrichment — sentiment, NER, topics, keywords)
-                  →  pipeline.db      (auto-written after every file via db_manager)
-    ↓
-export_csv.py     →  data/csv/        (one CSV per query topic)
-```
-
----
-
-## SQLite Database
-
-All NLP-enriched data is stored in `pipeline.db` — a normalized SQLite database with 9 tables.
-
-### Schema
-
-| Table | Description | Rows (current) |
-|-------|-------------|----------------|
-| `queries` | Unique query strings | 24 |
-| `fetch_runs` | One row per processed JSON file | 148 |
-| `tweets` | Base tweet fields from data/processed/ | 1423 |
-| `tweet_nlp` | NLP enrichment — sentiment, tokens, entities | 1121 |
-| `entities` | Named entities per tweet (NER) | 21556 |
-| `hashtags` | One row per hashtag per tweet | 5715 |
-| `keywords` | TF-IDF keywords per tweet | 18686 |
-| `topics` | BERTopic output per fetch run | 0* |
-| `events` | Keyword frequency events per fetch run | 515 |
-
-> *BERTopic requires minimum 5 tweets per file. Most files filtered below threshold — will populate as more data is collected.
-
-### Sample Queries
-
-```sql
--- All negative tweets about Manipur flood
-SELECT t.text, n.vader_compound, n.final_label
-FROM tweets t JOIN tweet_nlp n ON t.id = n.tweet_id
-JOIN fetch_runs r ON t.fetch_run_id = r.id
-JOIN queries q ON r.query_id = q.id
-WHERE q.query_text = 'Manipur flood'
-  AND n.final_label = 'negative';
-
--- Top entities across all tweets
-SELECT entity_text, entity_label, SUM(frequency) as total
-FROM entities
-GROUP BY entity_text, entity_label
-ORDER BY total DESC
-LIMIT 20;
-
--- Most used hashtags
-SELECT hashtag, COUNT(*) as count
-FROM hashtags
-GROUP BY hashtag
-ORDER BY count DESC
-LIMIT 10;
-```
-
-### Auto-write
-
-`preprocess.py` automatically writes to `pipeline.db` after processing each file — no manual step needed for future runs.
-
-For one-time migration of existing data:
-```bash
-python ingest.py
-```
-
----
-
-## Fallback Logic
-
-The pipeline uses a two-source strategy with automatic failover:
-
-- **Primary:** Twikit (cookie-based, completely free, no API key needed)
-- **Fallback:** twitterapi.io (activates automatically on 429 / 402 / 403 errors)
-
-Source is tracked **per tweet** (`source` field) and at file level (`apiSource` in metadata).
-
-To set up Twikit, add to `.env`:
-
-```
-TWITTER_USERNAME=your_twitter_handle
-TWITTER_EMAIL=your@email.com
-TWITTER_PASSWORD=yourpassword
-TWIKIT_COOKIES_FILE=twikit_cookies.json
-```
-
-First run logs in and saves `twikit_cookies.json`. Subsequent runs reuse cookies silently. If cookies expire, the file is auto-deleted and re-login happens on the next run.
-
-> Use a dedicated/burner Twitter account — not your personal account.
-
----
-
-## API Options Evaluated
-
-### twitterapi.io (current fallback)
-Unofficial wrapper around X's internal API. 100K free credits on signup, then $0.15/1000 tweets. No account login needed. Reliable for research-scale collection.
-
-**Limitations:** Free credits deplete with heavy testing. Hits 429 if requests are too fast — pipeline enforces 5s delay between pages.
-
-### Twikit (primary)
-Pure Python, completely free, no API key needed. Authenticates via a real Twitter account. Cookie-based — logs in once, reuses session. Tested and integrated.
-
-**Current status:** Temporarily broken due to a library-level auth issue (`KEY_BYTE indices`) caused by Twitter's internal API changes. Pipeline auto-falls back to twitterapi.io. Will auto-activate as primary once the library is patched (`pip install twikit --upgrade`).
-
-### Twscrape
-No meaningful updates in ~11 months. Likely broken against current X endpoints. Not recommended.
-
-### Official X API
-Free tier is write-only — cannot search or read tweets. Basic plan starts at $200/month. Not viable for research use without budget approval.
-
----
-
-## Error Handling
-
-| Code | Meaning | Action |
-|------|---------|--------|
-| 200 | Success | Continue |
-| 401 | Invalid API key | Stop |
-| 402 | Payment required / credits exhausted | Trigger Twikit fallback |
-| 403 | Access denied | Trigger Twikit fallback |
-| 404 | Wrong endpoint | Stop |
-| 429 | Rate limit exceeded | Retry with 10s wait, then Twikit fallback |
-| 500 | Server error | Stop |
-
-Retry logic: 3 attempts with 3s delay on Timeout / ConnectionError / RequestException.
-
----
-
-## Logging
-
-All modules use Python's `logging` module with three levels:
-
-- `INFO` — normal pipeline progress
-- `WARNING` — fallback triggers, duplicate removal, retries
-- `ERROR` — failed requests, missing credentials, save failures
-
----
-
-## Output Format
-
-Each query produces files across three stages:
-
-### Raw (`data/raw/query_timestamp.json`)
-Complete API response, nothing stripped.
-
-### Processed (`data/processed/query_timestamp.json`)
-
-```json
-{
-  "metadata": {
-    "query": "Manipur flood",
-    "fetchedAt": "2026-06-17T07:45:52",
-    "apiSource": "twitterapi.io",
-    "tweetCount": 60
-  },
-  "tweets": [
-    {
-      "id": "...",
-      "text": "...",
-      "createdAt": "...",
-      "author": "...",
-      "authorFollowers": 4521,
-      "retweetCount": 3,
-      "likeCount": 4,
-      "replyCount": 0,
-      "viewCount": 500,
-      "lang": "en",
-      "url": "https://twitter.com/...",
-      "isReply": false,
-      "isRetweet": false,
-      "hashtags": ["Manipur", "flood"],
-      "source": "twitterapi.io"
-    }
-  ]
-}
-```
-
-### NLP Enriched (`data/nlp/query_timestamp.json`)
-
-```json
-{
-  "metadata": {
-    "query": "Manipur flood",
-    "fetchedAt": "2026-06-17T07:45:52",
-    "apiSource": "twitterapi.io",
-    "tweetCount": 60,
-    "preprocessedAt": "2026-06-20T20:58:00",
-    "originalCount": 60,
-    "afterFilter": 45,
-    "afterDedup": 43,
-    "finalCount": 43,
-    "device": "cpu"
-  },
-  "topics": [
-    { "topic_id": 0, "words": ["flood", "relief", "manipur", "affected", "district"] }
-  ],
-  "events": [
-    { "keyword": "flood", "count": 38, "freq_ratio": 0.21 }
-  ],
-  "tweets": [
-    {
-      "id": "...",
-      "cleaned_text": "Manipur flood relief operations underway...",
-      "hashtags": ["ManipurFlood", "Relief"],
-      "mentions": ["NDRF", "CMO_Manipur"],
-      "emojis": [],
-      "urls": ["https://t.co/..."],
-      "tokens": ["manipur", "flood", "relief", "operation", "underway"],
-      "lemmatized_tokens": ["manipur", "flood", "relieve", "operation", "underway"],
-      "entities": [{ "text": "Manipur", "label": "GPE" }],
-      "entity_freq": { "Manipur": 2 },
-      "sentiment": {
-        "vader": { "compound": -0.42, "label": "negative" },
-        "roberta": {
-          "label": "negative",
-          "scores": { "negative": 0.71, "neutral": 0.22, "positive": 0.07 }
-        },
-        "final_label": "negative"
-      },
-      "keywords": ["flood", "relief", "manipur", "district", "operation"],
-      "engagement": { "likes": 4, "retweets": 3, "replies": 0, "views": 500 },
-      "source": "twitterapi.io"
-    }
-  ]
-}
-```
-
----
-
-## NLP Preprocessing — Enhancements
-
-| # | Enhancement | Approach | Output Field |
-|---|-------------|----------|--------------|
-| 1 | Hashtag extraction | Regex `#(\w+)` | `hashtags` |
-| 2 | Mention extraction | Regex `@(\w+)` | `mentions` |
-| 3 | Emoji preservation | `emoji` library (all Unicode blocks) | `emojis` |
-| 4 | URL storage | Regex, stored before cleaning | `urls` |
-| 5 | Batch NLP | `nlp.pipe()` — batch_size=50 | — |
-| 6 | Tokenization | spaCy surface forms, lowercased | `tokens` |
-| 7 | Lemmatization | spaCy `token.lemma_` | `lemmatized_tokens` |
-| 8 | Deterministic lang detection | `DetectorFactory.seed=0` | — |
-| 9 | Deduplication | ID dedup + text dedup | — |
-| 10 | Entity frequency | `Counter` over NER entities | `entity_freq` |
-| 11 | Sentiment — rule-based | VADER | `sentiment.vader` |
-| 12 | Sentiment — transformer | RoBERTa (twitter-trained, batched, GPU-aware) | `sentiment.roberta` |
-| 13 | Keyword extraction | TF-IDF across batch (scikit-learn) | `keywords` |
-| 14 | Event detection | Keyword freq_ratio across tweets | `events` (file-level) |
-| 15 | Topic modelling | BERTopic (replaces LDA, min 5 tweets) | `topics` (file-level) |
-| 16 | Engagement metrics | likes, retweets, replies, views | `engagement` |
-
-> **Note:** BERTopic requires minimum 5 tweets per file to run. Files with fewer tweets skip topic modelling gracefully.
-
----
-
-## Testing
-
-| Environment | Status | Notes |
-|-------------|--------|-------|
-| Local (Windows, CPU) | ✅ Tested | 148 files processed, 1423 tweets ingested |
-| Google Colab (T4 GPU) | ✅ Tested | RoBERTa batching ~10x faster on GPU |
-
----
-
-## Dependencies
-
-```
-requests
-python-dotenv
-twikit
-nltk
-spacy
-langdetect
-emoji
-vaderSentiment
-transformers
-torch
-bertopic
-scikit-learn
-tqdm
-```
-
-Full pinned versions in `requirements.txt`.
-
----
-
-## Repository
-
-**Branch:** `twitter_acquisition`
-**Group:** Multimodal Broadcast Analytics, IIT Guwahati
-**Supervisor:** Prof. Prithwijit Guha
-**Assigned and Alloted to :** Shlok Verman (M.Tech Scholar, IIT Guwahati)
+## Author
+**Hritwik Varma** — B.Tech ECE, BIT Mesra  
+Research Intern, IIT Guwahati (May–July 2026)  
+Supervisor: Prof. Prithwijit Guha | Alloted to: Shlok Verman (M.Tech Scholar)  
+GitHub: [github.com/Wik-Hrit](https://github.com/Wik-Hrit)

@@ -10,7 +10,6 @@ import sqlite3
 import json
 import os
 import logging
-from collections import Counter
 from datetime import datetime
 
 logging.basicConfig(
@@ -181,25 +180,36 @@ def engagement_by_query(conn) -> dict:
 
 def tweet_volume_over_time(conn) -> dict:
     rows = conn.execute("""
-        SELECT q.query_text,
-               SUBSTR(t.created_at, 1, 10) as date,
-               COUNT(*) as count
+        SELECT q.query_text, t.created_at, COUNT(*) as count
         FROM tweets t
         JOIN fetch_runs r ON r.id = t.fetch_run_id
         JOIN queries q    ON q.id = r.query_id
         WHERE t.created_at IS NOT NULL
-          AND LENGTH(t.created_at) >= 10
-        GROUP BY q.query_text, date
-        ORDER BY q.query_text, date
+        GROUP BY q.query_text, t.created_at
+        ORDER BY q.query_text, t.created_at
     """).fetchall()
 
-    result = {}
+    from datetime import datetime as dt
+    def parse(s):
+        for fmt in ("%a %b %d %H:%M:%S +0000 %Y", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+            try:
+                return dt.strptime(s.strip(), fmt).strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+        return None
+
+    # aggregate by date
+    from collections import defaultdict
+    buckets = defaultdict(lambda: defaultdict(int))
     for row in rows:
-        q = row["query_text"]
-        if q not in result:
-            result[q] = []
-        result[q].append({"date": row["date"], "count": row["count"]})
-    return result
+        d = parse(row["created_at"])
+        if d:
+            buckets[row["query_text"]][d] += row["count"]
+
+    return {
+        q: [{"date": d, "count": c} for d, c in sorted(dates.items())]
+        for q, dates in buckets.items()
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -28,3 +28,19 @@ with sqlite3.connect(DB_PATH) as conn:
         except Exception as e:
             print(f"{t:<15} ERROR: {e}")
     print()
+
+    # Entity label breakdown
+    print(f"{'Entity Label':<15} {'Count':>8}")
+    print("-" * 25)
+    try:
+        rows = conn.execute("""
+            SELECT entity_label, COUNT(*) as cnt
+            FROM entities
+            GROUP BY entity_label
+            ORDER BY cnt DESC
+        """).fetchall()
+        for r in rows:
+            print(f"{r[0]:<15} {r[1]:>8,}")
+    except Exception as e:
+        print(f"Entity breakdown ERROR: {e}")
+    print()

@@ -253,6 +253,57 @@ def source_distribution(conn) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 9. Topics per query (Fix 3: BERTopic now runs per query, not per file)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def topics_by_query(conn) -> dict:
+    rows = conn.execute("""
+        SELECT q.query_text, t.topic_id, t.words, t.doc_count
+        FROM topics t
+        JOIN queries q ON q.id = t.query_id
+        ORDER BY q.query_text, t.doc_count DESC
+    """).fetchall()
+
+    result = {}
+    for row in rows:
+        q = row["query_text"]
+        if q not in result:
+            result[q] = []
+        result[q].append({
+            "topic_id":  row["topic_id"],
+            "words":     json.loads(row["words"]) if row["words"] else [],
+            "doc_count": row["doc_count"]
+        })
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. Sentiment ensemble breakdown (Fix 1: confidence-based ensemble)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def ensemble_breakdown(conn) -> dict:
+    rows = conn.execute("""
+        SELECT final_source, COUNT(*) as count, AVG(final_confidence) as avg_conf
+        FROM tweet_nlp
+        WHERE final_source IS NOT NULL
+        GROUP BY final_source
+    """).fetchall()
+
+    total = sum(r["count"] for r in rows)
+    return {
+        "total_tweets": total,
+        "by_source": {
+            row["final_source"]: {
+                "count":           row["count"],
+                "pct":             round(row["count"] / total * 100, 2) if total else 0,
+                "avg_confidence":  round(row["avg_conf"] or 0, 4)
+            }
+            for row in rows
+        }
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Print helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -308,6 +359,25 @@ def print_sources(sources):
         print(f"  {src:<25} {count:>6} tweets")
 
 
+def print_topics(topics):
+    print_section("7. TOPICS PER QUERY (per-query BERTopic)")
+    for q, tlist in topics.items():
+        print(f"\n  {q}:")
+        if not tlist:
+            print("    (not enough pooled docs, or BERTopic unavailable)")
+        for t in tlist[:8]:
+            words = ", ".join(t["words"][:5])
+            print(f"    topic {t['topic_id']:>3}  ({t['doc_count']:>4} docs)  {words}")
+
+
+def print_ensemble(ensemble):
+    print_section("8. SENTIMENT ENSEMBLE BREAKDOWN (Fix 1)")
+    print(f"  Total tweets: {ensemble['total_tweets']}")
+    for source, stats in ensemble["by_source"].items():
+        print(f"  {source:<10} won {stats['count']:>6} times ({stats['pct']:>5}%)  "
+              f"avg confidence {stats['avg_confidence']}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
@@ -324,6 +394,8 @@ if __name__ == "__main__":
     volume     = tweet_volume_over_time(conn)
     agreement  = sentiment_agreement(conn)
     sources    = source_distribution(conn)
+    topics     = topics_by_query(conn)
+    ensemble   = ensemble_breakdown(conn)
 
     conn.close()
 
@@ -334,6 +406,8 @@ if __name__ == "__main__":
     print_top_keywords(keywords)
     print_agreement(agreement)
     print_sources(sources)
+    print_topics(topics)
+    print_ensemble(ensemble)
 
     # Save full results to JSON
     results = {
@@ -346,6 +420,8 @@ if __name__ == "__main__":
         "volume":      volume,
         "agreement":   agreement,
         "sources":     sources,
+        "topics":      topics,
+        "ensemble":    ensemble,
     }
 
     out_path = os.path.join(OUTPUT_DIR, "analysis_results.json")

@@ -35,7 +35,7 @@ if not SKIP_DB_WRITE:
     from db_manager import (get_conn, init_db, upsert_query, insert_fetch_run,
                             insert_tweets, insert_nlp, insert_entities,
                             insert_hashtags, insert_keywords,
-                            insert_topics, insert_events)
+                            insert_events)
     init_db()   # P1: init at module level — works whether called from main.py or directly
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -43,13 +43,6 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 log = logging.getLogger(__name__)
-
-try:
-    from bertopic import BERTopic
-    BERTOPIC_AVAILABLE = True
-except ImportError:
-    BERTOPIC_AVAILABLE = False
-    log.warning("BERTopic not installed — topic modelling disabled.")
 
 vader              = SentimentIntensityAnalyzer()
 ROBERTA_MODEL      = "cardiffnlp/twitter-roberta-base-sentiment"
@@ -59,7 +52,15 @@ _roberta_model     = _roberta_model.to(DEVICE)
 _roberta_model.eval()
 ROBERTA_LABELS     = ["negative", "neutral", "positive"]
 
-nlp       = spacy.load("en_core_web_sm")
+try:
+    nlp = spacy.load("en_core_web_lg")
+except OSError:
+    log.warning(
+        "en_core_web_lg not found — install it with "
+        "`python -m spacy download en_core_web_lg`. Falling back to en_core_web_sm "
+        "for this run (lower NER/entity quality)."
+    )
+    nlp = spacy.load("en_core_web_sm")
 STOPWORDS = set(stopwords.words("english"))
 
 
@@ -146,6 +147,29 @@ def get_vader_sentiment(text: str) -> dict:
             "neg": round(s["neg"],4), "label": "positive" if c>=0.05 else "negative" if c<=-0.05 else "neutral"}
 
 
+def get_final_sentiment(vader_result: dict, roberta_result: dict) -> dict:
+    """
+    Confidence-based sentiment ensemble (Fix 1).
+
+    Previously final_label was always roberta['label'], ignoring VADER
+    entirely except for storage. Instead: each model reports a confidence
+    score — RoBERTa's is its max softmax probability, VADER's is the
+    absolute value of its compound score (already 0-1). Whichever model
+    is more confident about its own call wins. Ties favour RoBERTa, since
+    it's generally the stronger model for short, informal tweet text.
+    """
+    roberta_scores = roberta_result.get("scores", {}) or {}
+    roberta_conf   = max(roberta_scores.values()) if roberta_scores else 0.0
+    vader_conf     = abs(vader_result.get("compound", 0.0))
+
+    if roberta_conf >= vader_conf:
+        return {"label": roberta_result.get("label", "neutral"),
+                "confidence": round(roberta_conf, 4), "source": "roberta"}
+    else:
+        return {"label": vader_result.get("label", "neutral"),
+                "confidence": round(vader_conf, 4), "source": "vader"}
+
+
 def batch_tfidf_keywords(texts: list, top_n=10) -> list:
     if len(texts) < 2: return [[] for _ in texts]
     try:
@@ -156,46 +180,6 @@ def batch_tfidf_keywords(texts: list, top_n=10) -> list:
                 for row in matrix]
     except Exception:
         return [[] for _ in texts]
-
-
-def get_topics_bertopic(texts: list) -> list:
-    """P9: BERTopic with small-dataset UMAP/HDBSCAN config — fixes topics=0."""
-    if not BERTOPIC_AVAILABLE or len(texts) < 5:
-        return []
-    try:
-        from umap import UMAP
-        from hdbscan import HDBSCAN
-
-        n = len(texts)
-        umap_model = UMAP(
-            n_neighbors  = min(n - 1, 15),
-            n_components = min(n - 1, 5),
-            min_dist     = 0.0,
-            metric       = "cosine",
-            random_state = 42
-        )
-        hdbscan_model = HDBSCAN(
-            min_cluster_size = 2,
-            min_samples      = 1,
-            prediction_data  = True
-        )
-        model = BERTopic(
-            umap_model     = umap_model,
-            hdbscan_model  = hdbscan_model,
-            verbose        = False,
-            nr_topics      = "auto",
-            min_topic_size = 2
-        )
-        topics, _ = model.fit_transform(texts)
-        info      = model.get_topic_info()
-        result    = []
-        for _, row in info[info["Topic"] != -1].head(5).iterrows():
-            words = [w for w, _ in model.get_topic(row["Topic"])]
-            result.append({"topic_id": int(row["Topic"]), "words": words[:5]})
-        return result
-    except Exception as e:
-        log.warning(f"BERTopic failed: {e}")  # now shows real error
-        return []
 
 
 def detect_events(tweets: list, top_n=5) -> list:
@@ -267,14 +251,19 @@ def preprocess_file(filepath: str, output_dir: str = "data/nlp"):
 
     roberta_results = batch_roberta_sentiment(cleaned_texts)
     for tweet, roberta in zip(tweets, roberta_results):
-        tweet["sentiment"]["roberta"]     = roberta
-        tweet["sentiment"]["final_label"] = roberta["label"]
+        tweet["sentiment"]["roberta"] = roberta
+        final = get_final_sentiment(tweet["sentiment"]["vader"], roberta)
+        tweet["sentiment"]["final_label"]      = final["label"]
+        tweet["sentiment"]["final_confidence"] = final["confidence"]
+        tweet["sentiment"]["final_source"]     = final["source"]
 
     tfidf_keywords = batch_tfidf_keywords(cleaned_texts)
     for tweet, kws in zip(tweets, tfidf_keywords):
         tweet["keywords"] = kws
 
-    topics = get_topics_bertopic(cleaned_texts)
+    # Topic modelling no longer runs here — BERTopic now runs PER QUERY
+    # (pooling tweets across all fetch_runs) in ingest.py, after ingestion.
+    topics = []
     events = detect_events(tweets)
 
     result = {
@@ -322,7 +311,6 @@ def preprocess_file(filepath: str, output_dir: str = "data/nlp"):
                 insert_nlp(conn, run_id, tweets)
                 insert_entities(conn, run_id, tweets)
                 insert_keywords(conn, run_id, tweets)
-                insert_topics(conn, run_id, topics)
                 insert_events(conn, run_id, events)
                 log.info(f"  ✓ Written to pipeline.db")
 

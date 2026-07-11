@@ -5,4 +5,7 @@ __pycache__/
 output/
 data/
 twikit_cookies.json
-.env
+pipeline.db
+pipeline.db-wal
+pipeline.db-shm
+data.zip

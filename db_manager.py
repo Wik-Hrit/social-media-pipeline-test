@@ -11,7 +11,7 @@ Multimodal Broadcast Analytics System, IIT Guwahati
     5. entities      — named entities, normalized
     6. hashtags      — one row per hashtag per tweet (normalized)
     7. keywords      — one row per TF-IDF keyword per tweet (normalized)
-    8. topics        — BERTopic output per run
+    8. topics        — BERTopic output per QUERY (pooled across all fetch_runs)
     9. events        — keyword frequency events per run
 """
 
@@ -106,6 +106,8 @@ def init_db(db_path: str = DB_PATH):
                 roberta_neu       REAL,
                 roberta_pos       REAL,
                 final_label       TEXT,
+                final_confidence  REAL,
+                final_source      TEXT,
                 eng_likes         INTEGER DEFAULT 0,
                 eng_retweets      INTEGER DEFAULT 0,
                 eng_replies       INTEGER DEFAULT 0,
@@ -134,9 +136,10 @@ def init_db(db_path: str = DB_PATH):
             );
             CREATE TABLE IF NOT EXISTS topics (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                fetch_run_id INTEGER NOT NULL REFERENCES fetch_runs(id),
+                query_id     INTEGER NOT NULL REFERENCES queries(id),
                 topic_id     INTEGER NOT NULL,
-                words        TEXT    DEFAULT '[]'
+                words        TEXT    DEFAULT '[]',
+                doc_count    INTEGER DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS events (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -155,6 +158,7 @@ def init_db(db_path: str = DB_PATH):
             CREATE INDEX IF NOT EXISTS idx_hashtags_tag   ON hashtags(hashtag);
             CREATE INDEX IF NOT EXISTS idx_keywords_kw    ON keywords(keyword);
             CREATE INDEX IF NOT EXISTS idx_runs_query     ON fetch_runs(query_id);
+            CREATE INDEX IF NOT EXISTS idx_topics_query   ON topics(query_id);
         """)
     log.info(f"Database initialized → {db_path} (9 tables)")
 
@@ -230,15 +234,16 @@ def insert_nlp(conn, fetch_run_id: int, tweets: list) -> int:
                     (tweet_id, fetch_run_id, cleaned_text,
                      tokens, lemmatized_tokens, mentions, emojis, urls,
                      vader_compound, vader_pos, vader_neu, vader_neg, vader_label,
-                     roberta_label, roberta_neg, roberta_neu, roberta_pos, final_label,
+                     roberta_label, roberta_neg, roberta_neu, roberta_pos,
+                     final_label, final_confidence, final_source,
                      eng_likes, eng_retweets, eng_replies, eng_views, eng_bookmarks)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (tweet_id, fetch_run_id, t.get("cleaned_text"),
                   _j(t.get("tokens", [])), _j(t.get("lemmatized_tokens", [])),
                   _j(t.get("mentions", [])), _j(t.get("emojis", [])), _j(t.get("urls", [])),
                   vader.get("compound"), vader.get("pos"), vader.get("neu"), vader.get("neg"), vader.get("label"),
                   roberta.get("label"), rob_scores.get("negative"), rob_scores.get("neutral"), rob_scores.get("positive"),
-                  sentiment.get("final_label"),
+                  sentiment.get("final_label"), sentiment.get("final_confidence"), sentiment.get("final_source"),
                   eng.get("likes", 0), eng.get("retweets", 0), eng.get("replies", 0),
                   eng.get("views"), eng.get("bookmarks")))
             inserted += 1
@@ -311,12 +316,19 @@ def insert_keywords(conn, fetch_run_id: int, tweets: list) -> int:
     return inserted
 
 
-def insert_topics(conn, fetch_run_id: int, topics: list) -> int:
+def insert_topics(conn, query_id: int, topics: list) -> int:
+    """
+    P-fix: topics are now generated per QUERY (pooled across all fetch_runs
+    for that query), not per file. Called from ingest.py after all files
+    for a query have been ingested. Clears any existing topics for the
+    query first so this is safe to re-run.
+    """
+    conn.execute("DELETE FROM topics WHERE query_id = ?", (query_id,))
     inserted = 0
     for topic in topics:
         conn.execute(
-            "INSERT INTO topics (fetch_run_id, topic_id, words) VALUES (?, ?, ?)",
-            (fetch_run_id, topic.get("topic_id"), _j(topic.get("words", []))))
+            "INSERT INTO topics (query_id, topic_id, words, doc_count) VALUES (?, ?, ?, ?)",
+            (query_id, topic.get("topic_id"), _j(topic.get("words", [])), topic.get("doc_count", 0)))
         inserted += 1
     return inserted
 

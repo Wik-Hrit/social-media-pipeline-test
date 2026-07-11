@@ -30,3 +30,5 @@ seaborn
 wordcloud
 
 # ── Visualisation ─────────────────────────────────────────
+hdbscan
+umap-learn

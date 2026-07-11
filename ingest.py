@@ -31,6 +31,97 @@ log = logging.getLogger(__name__)
 PROCESSED_DIR = "data/processed"
 NLP_DIR       = "data/nlp"
 
+try:
+    from bertopic import BERTopic
+    BERTOPIC_AVAILABLE = True
+except ImportError:
+    BERTOPIC_AVAILABLE = False
+    log.warning("BERTopic not installed — per-query topic modelling disabled.")
+
+
+def get_topics_bertopic(texts: list, top_n: int = 10) -> list:
+    """
+    Fix 3: BERTopic per QUERY, not per file.
+
+    Called once per query on ALL cleaned tweet text pooled across every
+    fetch_run for that query (previously this ran separately on each
+    small per-file batch in preprocess.py, which starved BERTopic of
+    data and produced noisy, redundant topics per file).
+
+    min_cluster_size scales with corpus size instead of being a fixed 2,
+    since pooled per-query corpora are usually much larger than a single
+    file's tweets.
+    """
+    if not BERTOPIC_AVAILABLE or len(texts) < 5:
+        return []
+    try:
+        from umap import UMAP
+        from hdbscan import HDBSCAN
+
+        n = len(texts)
+        umap_model = UMAP(
+            n_neighbors  = min(n - 1, 15),
+            n_components = min(n - 1, 5),
+            min_dist     = 0.0,
+            metric       = "cosine",
+            random_state = 42
+        )
+        min_cluster_size = max(3, n // 50)
+        hdbscan_model = HDBSCAN(
+            min_cluster_size = min_cluster_size,
+            min_samples      = 1,
+            prediction_data  = True
+        )
+        model = BERTopic(
+            umap_model     = umap_model,
+            hdbscan_model  = hdbscan_model,
+            verbose        = False,
+            nr_topics      = "auto",
+            min_topic_size = min_cluster_size
+        )
+        topics, _ = model.fit_transform(texts)
+        info      = model.get_topic_info()
+        result    = []
+        for _, row in info[info["Topic"] != -1].head(top_n).iterrows():
+            words = [w for w, _ in model.get_topic(row["Topic"])]
+            result.append({
+                "topic_id":  int(row["Topic"]),
+                "words":     words[:8],
+                "doc_count": int(row["Count"])
+            })
+        return result
+    except Exception as e:
+        log.warning(f"  BERTopic failed for query pool: {e}")
+        return []
+
+
+def generate_query_topics(conn):
+    """Runs BERTopic once per query, pooling tweet text across all its fetch_runs."""
+    if not BERTOPIC_AVAILABLE:
+        return
+
+    queries = conn.execute("SELECT id, query_text FROM queries").fetchall()
+    log.info(f"\nRunning per-query BERTopic across {len(queries)} queries...")
+
+    for q in queries:
+        rows = conn.execute("""
+            SELECT n.cleaned_text
+            FROM tweet_nlp n
+            JOIN tweets t     ON t.id = n.tweet_id
+            JOIN fetch_runs r ON r.id = t.fetch_run_id
+            WHERE r.query_id = ? AND n.cleaned_text IS NOT NULL AND n.cleaned_text != ''
+        """, (q["id"],)).fetchall()
+        texts = [row["cleaned_text"] for row in rows]
+
+        if len(texts) < 5:
+            log.info(f"  Skipping '{q['query_text']}' — only {len(texts)} docs (need >= 5)")
+            continue
+
+        log.info(f"  '{q['query_text']}': {len(texts)} pooled docs")
+        topics = get_topics_bertopic(texts)
+        n = insert_topics(conn, q["id"], topics)
+        log.info(f"    ✓ {n} topics")
+
 
 def load_json(path: str) -> dict:
     with open(path, encoding="utf-8") as f:
@@ -127,12 +218,16 @@ def ingest_all():
                 total_entities += n_ent
                 n_kw       = insert_keywords(conn, run_id, nlp_tweets)
                 total_keywords += n_kw
-                n_topics   = insert_topics(conn, run_id, nlp_data.get("topics", []))
                 n_events   = insert_events(conn, run_id, nlp_data.get("events", []))
                 log.info(f"  ✓ {n_nlp} NLP | {n_ent} entities | {n_kw} keywords | "
-                         f"{n_topics} topics | {n_events} events")
+                         f"{n_events} events")
             else:
                 log.warning(f"  No NLP file found for {fname} — NLP tables skipped")
+
+    # Fix 3: per-query BERTopic — run once per query, pooling text across
+    # every fetch_run for that query, after all files are ingested.
+    with get_conn() as conn:
+        generate_query_topics(conn)
 
     log.info(f"\n{'='*55}")
     log.info(f"Ingestion complete.")

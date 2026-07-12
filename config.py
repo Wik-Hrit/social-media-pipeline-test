@@ -25,6 +25,9 @@ SCHEDULER_ENABLED    = True   # set False to run just once
 RUN_INTERVAL_HOURS   = 2      # hours between each full pipeline run
 MAX_RUNS             = 0      # 0 = run forever, N = stop after N runs
 
+# ── Database ──────────────────────────────────────────────────────────────────
+DB_PATH          = "pipeline.db"
+
 # ── File paths ────────────────────────────────────────────────────────────────
 QUERIES_FILE     = "queries.txt"
 COOKIES_FILE     = "twikit_cookies.json"

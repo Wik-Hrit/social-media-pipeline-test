@@ -1,6 +1,8 @@
 # Social Media NLP Pipeline
 **Multimodal Broadcast Analytics System — IIT Guwahati**
 
+**🔴 Live Dashboard:** https://social-media-pipeline-test-zmes8tqy9mnh6hfp8mwkyv.streamlit.app
+
 A complete end-to-end pipeline for acquiring, preprocessing, and analysing Twitter/X data across multiple query topics using NLP techniques including sentiment analysis (VADER + RoBERTa), named entity recognition (spaCy), topic modelling (BERTopic), and keyword extraction (TF-IDF).
 
 ---

@@ -173,7 +173,8 @@ k1.metric("Total Tweets",    f"{len(df):,}")
 k2.metric("Queries",         len(selected_queries))
 k3.metric("Positive",        f"{(df['final_label']=='positive').sum():,}")
 k4.metric("Negative",        f"{(df['final_label']=='negative').sum():,}")
-k5.metric("Avg Likes",       f"{df['eng_likes'].mean():.1f}" if "eng_likes" in df else "—")
+avg_likes = df['eng_likes'].mean() if "eng_likes" in df else None   # Fix 30
+k5.metric("Avg Likes", f"{avg_likes:.1f}" if avg_likes is not None and pd.notna(avg_likes) else "—")
 
 st.markdown("---")
 
@@ -301,7 +302,16 @@ else:
             continue
         st.markdown(f"**{query}**")
         for _, row in qt.iterrows():
-            words = json.loads(row["words"]) if isinstance(row["words"], str) else row["words"]
+            words_raw = row["words"]                            # Fix 29
+            if pd.isna(words_raw) if hasattr(pd, 'isna') else (words_raw != words_raw):
+                words = []
+            elif isinstance(words_raw, str):
+                try:
+                    words = json.loads(words_raw)
+                except Exception:
+                    words = []
+            else:
+                words = list(words_raw) if words_raw else []
             words_str = ", ".join(words[:8]) if words else "—"
             st.markdown(f"- Topic {row['topic_id']} ({row['doc_count']} docs): `{words_str}`")
 

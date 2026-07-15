@@ -1,94 +1,133 @@
 """
 export_csv.py
-Converts data/nlp/ JSON files to CSV format.
-Groups files by query topic, one CSV per topic.
+Exports NLP-enriched tweet data from data/nlp/ to CSVs in data/csv/.
+Reads from NLP JSON files (same source as ingest.py).
+
+Usage: python export_csv.py
 """
 
-import json
 import os
+import sys
+import json
 import csv
-import re
+import logging
 from collections import defaultdict
 
-
-def slugify(filename):
-    """Extract topic slug from filename like 'delhi-heatwave_20260618_015310.json'"""
-    return re.sub(r'_\d{8}_\d{6}\.json$', '', filename)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+log = logging.getLogger(__name__)
 
 
 def flatten_tweet(tweet):
-    """Flatten a tweet dict to a CSV-friendly row."""
-    entities = tweet.get("entities", [])
-    entity_str = "; ".join([f"{e['text']} ({e['label']})" for e in entities]) if entities else ""
+    """Fix 28: Full flatten including all NLP/sentiment fields."""
+    entities  = tweet.get("entities", [])
+    sentiment = tweet.get("sentiment", {})
+    vader     = sentiment.get("vader", {})
+    roberta   = sentiment.get("roberta", {})
+    eng       = tweet.get("engagement", {})
 
-    tokens = tweet.get("tokens", [])
-    token_str = ", ".join(tokens[:20]) if tokens else ""  # limit to 20 tokens
+    entity_str = "; ".join(
+        [f"{e['text']} ({e['label']})" for e in entities]
+    ) if entities else ""
+
+    tokens    = tweet.get("tokens", [])
+    token_str = ", ".join(tokens[:20]) if tokens else ""
 
     return {
-        "id":              tweet.get("id", ""),
-        "text":            tweet.get("text", "").replace("\n", " "),
-        "cleaned_text":    tweet.get("cleaned_text", "").replace("\n", " "),
-        "author":          tweet.get("author", ""),
-        "authorFollowers": tweet.get("authorFollowers", ""),
-        "createdAt":       tweet.get("createdAt", ""),
-        "likeCount":       tweet.get("likeCount", 0),
-        "retweetCount":    tweet.get("retweetCount", 0),
-        "replyCount":      tweet.get("replyCount", 0),
-        "viewCount":       tweet.get("viewCount", 0),
-        "lang":            tweet.get("lang", ""),
-        "isReply":         tweet.get("isReply", False),
-        "hashtags":        ", ".join(tweet.get("hashtags", []) or []),
-        "tokens":          token_str,
-        "entities":        entity_str,
-        "url":             tweet.get("url", ""),
+        # ── Base fields ───────────────────────────────────────────────────────
+        "id":               tweet.get("id", ""),
+        "text":             (tweet.get("text", "") or "").replace("\n", " "),
+        "cleaned_text":     (tweet.get("cleaned_text", "") or "").replace("\n", " "),
+        "author":           tweet.get("author", ""),
+        "authorFollowers":  tweet.get("authorFollowers", ""),
+        "createdAt":        tweet.get("createdAt", ""),
+        "lang":             tweet.get("lang", ""),
+        "isReply":          tweet.get("isReply", False),
+        "isRetweet":        tweet.get("isRetweet", False),
+        "url":              tweet.get("url", ""),
+        # ── Raw engagement ────────────────────────────────────────────────────
+        "likeCount":        tweet.get("likeCount", 0),
+        "retweetCount":     tweet.get("retweetCount", 0),
+        "replyCount":       tweet.get("replyCount", 0),
+        "viewCount":        tweet.get("viewCount") or "",
+        # ── NLP engagement ────────────────────────────────────────────────────
+        "eng_likes":        eng.get("likes", 0),
+        "eng_retweets":     eng.get("retweets", 0),
+        "eng_replies":      eng.get("replies", 0),
+        "eng_views":        eng.get("views") or "",
+        "eng_bookmarks":    eng.get("bookmarks") or "",
+        # ── Sentiment ─────────────────────────────────────────────────────────
+        "final_label":      sentiment.get("final_label", ""),
+        "final_confidence": sentiment.get("final_confidence", ""),
+        "final_source":     sentiment.get("final_source", ""),
+        "vader_compound":   vader.get("compound", ""),
+        "vader_label":      vader.get("label", ""),
+        "roberta_label":    roberta.get("label", ""),
+        # ── NLP tokens / entities / keywords ─────────────────────────────────
+        "hashtags":         ", ".join(tweet.get("hashtags", []) or []),
+        "keywords":         ", ".join(tweet.get("keywords", []) or []),
+        "entities":         entity_str,
+        "tokens":           token_str,
     }
 
 
+def slugify(fname):
+    return os.path.splitext(fname)[0]
+
+
 def export_csv(nlp_dir="data/nlp", output_dir="data/csv"):
+    # Fix 27: directory guard
+    if not os.path.exists(nlp_dir):
+        log.error(f"{nlp_dir} not found. Run preprocess.py first.")
+        return
+
     os.makedirs(output_dir, exist_ok=True)
-
-    # Group files by topic
     topic_files = defaultdict(list)
-    for fname in os.listdir(nlp_dir):
-        if fname.endswith(".json"):
-            topic = slugify(fname)
-            topic_files[topic].append(os.path.join(nlp_dir, fname))
 
-    print(f"Found {len(topic_files)} topics\n")
+    # Fix 27: use os.walk to recurse into date subdirectories
+    for root, dirs, filenames in os.walk(nlp_dir):
+        for fname in filenames:
+            if fname.endswith(".json"):
+                topic = slugify(fname)
+                topic_files[topic].append(os.path.join(root, fname))
 
+    if not topic_files:
+        log.warning(f"No JSON files found under {nlp_dir}")
+        return
+
+    total_rows = 0
     for topic, files in sorted(topic_files.items()):
-        all_tweets = []
-
+        rows = []
+        seen_ids = set()
         for fpath in files:
-            with open(fpath, encoding="utf-8") as f:
-                data = json.load(f)
-            tweets = data.get("tweets", [])
-            all_tweets.extend(tweets)
+            try:
+                with open(fpath, encoding="utf-8") as f:
+                    data = json.load(f)
+                for tweet in data.get("tweets", []):
+                    tid = tweet.get("id")
+                    if tid and tid not in seen_ids:
+                        seen_ids.add(tid)
+                        rows.append(flatten_tweet(tweet))
+            except Exception as e:
+                log.error(f"  Error reading {fpath}: {e}")
 
-        if not all_tweets:
-            print(f"  Skipping {topic} — no tweets")
+        if not rows:
             continue
 
-        # Deduplicate across files
-        seen = set()
-        unique = []
-        for t in all_tweets:
-            tid = t.get("id")
-            if tid and tid not in seen:
-                seen.add(tid)
-                unique.append(t)
-
         out_path = os.path.join(output_dir, f"{topic}.csv")
-        rows = [flatten_tweet(t) for t in unique]
-
+        fieldnames = list(rows[0].keys())
         with open(out_path, "w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
 
-        print(f"  ✓ {topic} — {len(unique)} tweets → {out_path}")
+        log.info(f"  ✓ {topic[:40]:<40} {len(rows):>5} rows → {out_path}")
+        total_rows += len(rows)
 
-    print(f"\nDone. CSVs saved to {output_dir}/")
+    log.info(f"\n✓ Export complete — {total_rows:,} total rows across {len(topic_files)} files → {output_dir}/")
 
 
 if __name__ == "__main__":

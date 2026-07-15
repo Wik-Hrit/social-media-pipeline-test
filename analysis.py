@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-DB_PATH    = "pipeline.db"
+from config import DB_PATH
 OUTPUT_DIR = "data/analysis"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 

@@ -34,8 +34,10 @@ COOKIES_FILE     = "twikit_cookies.json"
 RAW_DATA_DIR     = "data/raw"
 PROCESSED_DIR    = "data/processed"
 NLP_DIR          = "data/nlp"
+ANALYSIS_DIR     = "data/analysis"    # Fix 25
+CHARTS_DIR       = "data/charts"      # Fix 25
 
 # ── Credit warning settings ───────────────────────────────────────────────────
 MIN_CREDITS_THRESHOLD = 500   # warn if credits fall below this
 STOP_ON_LOW_CREDITS   = True  # stop pipeline if below threshold
-RETRY_CODES = {429, 500, 502, 503}
+RETRY_CODES = {500, 502, 503}   # Fix 26: 429 handled separately with RATE_LIMIT_DELAY

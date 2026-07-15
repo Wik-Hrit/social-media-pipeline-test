@@ -41,8 +41,8 @@ def check_credits() -> int:
         )
         if resp.status_code == 200:
             data     = resp.json()
-            credits  = data.get("recharge_credits", 0)
-            bonus    = data.get("total_bonus_credits", 0)  # correct field name
+            credits  = data.get("recharge_credits") or 0   # Fix 22: None → 0
+            bonus    = data.get("total_bonus_credits") or 0  # Fix 22: None → 0
             total    = credits + bonus
             log.info(f"  💳 Credits remaining: {total} (recharge: {credits}, bonus: {bonus})")
             if total < MIN_CREDITS_THRESHOLD:
@@ -72,10 +72,13 @@ def get(endpoint, params=None):
                 timeout=10
             )
 
-            if response.status_code in RETRY_CODES:
-                wait = RATE_LIMIT_DELAY if response.status_code == 429 else RETRY_DELAY
-                log.warning(f"  HTTP {response.status_code}. Attempt {attempt+1}/{MAX_RETRIES} — retrying in {wait}s...")
-                time.sleep(wait)
+            if response.status_code == 429:   # Fix 21: rate limit — dedicated delay
+                log.warning(f"  Rate limited (429). Waiting {RATE_LIMIT_DELAY}s...")
+                time.sleep(RATE_LIMIT_DELAY)
+                continue
+            if response.status_code in RETRY_CODES:   # Fix 21: 5xx only
+                log.warning(f"  HTTP {response.status_code}. Attempt {attempt+1}/{MAX_RETRIES} — retrying in {RETRY_DELAY}s...")
+                time.sleep(RETRY_DELAY)
                 continue
 
             success, data = handle_response(response)

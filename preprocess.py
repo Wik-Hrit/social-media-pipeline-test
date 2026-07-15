@@ -61,14 +61,33 @@ except OSError:
         "for this run (lower NER/entity quality)."
     )
     nlp = spacy.load("en_core_web_sm")
-STOPWORDS = set(stopwords.words("english"))
+STOPWORDS = set(stopwords.words("english")) | {
+    "rt", "amp", "via", "dm", "lol", "omg", "wtf", "smh",
+    "imo", "imho", "irl", "fyi", "tbt", "icymi", "ootd",
+    "tbh", "ngl", "idk", "rn", "ig",
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def extract_hashtags(text): return re.findall(r"#(\w+)", text)
+def split_camel_case(token: str) -> list:
+    """Split CamelCase/PascalCase into individual words. E.g. 'DelhiHeatwave' → ['Delhi', 'Heatwave']."""
+    parts = re.sub(r"([a-z])([A-Z])", r"\1 \2", token).split()
+    return parts if len(parts) > 1 else [token]
+
+def extract_hashtags(text):
+    """Return raw hashtag tokens (unsplit) — CamelCase splitting applied separately."""
+    return re.findall(r"#(\w+)", text)
+
+def expand_hashtags(hashtags: list) -> list:
+    """Return a flat list of words by splitting CamelCase hashtags."""
+    words = []
+    for tag in hashtags:
+        words.extend(split_camel_case(tag))
+    return words
+
 def extract_mentions(text): return re.findall(r"@(\w+)", text)
 def extract_urls(text):     return re.findall(r"http\S+|www\S+", text)
 def extract_emojis(text):   return [e["emoji"] for e in emoji_lib.emoji_list(text)]
@@ -79,6 +98,7 @@ def clean_text(text: str) -> str:
     text = re.sub(r"@\w+", "", text)
     text = re.sub(r"#(\w+)", r"\1", text)
     text = re.sub(r"\n+", " ", text)
+    text = emoji_lib.replace_emoji(text, replace="")   # Fix 5: strip emojis
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -94,6 +114,9 @@ def is_valid(tweet: dict, allowed_langs=["en"]) -> bool:
     tweet_lang = tweet.get("lang", "")
     if tweet_lang and tweet_lang not in allowed_langs: return False
     if not tweet_lang:
+        # Fix 7: skip langdetect for very short tweets — unreliable below 4 words
+        if len(cleaned.split()) < 4:
+            return False
         try:
             if detect(cleaned) not in allowed_langs: return False
         except LangDetectException: return False
@@ -173,7 +196,8 @@ def get_final_sentiment(vader_result: dict, roberta_result: dict) -> dict:
 def batch_tfidf_keywords(texts: list, top_n=10) -> list:
     if len(texts) < 2: return [[] for _ in texts]
     try:
-        vec    = TfidfVectorizer(max_features=500, stop_words="english", ngram_range=(1,2))
+        vec    = TfidfVectorizer(max_features=500, stop_words="english", ngram_range=(1,2),
+                                min_df=2, sublinear_tf=True)
         matrix = vec.fit_transform(texts)
         terms  = vec.get_feature_names_out()
         return [[t for t,s in sorted(zip(terms, row.toarray()[0]), key=lambda x:x[1], reverse=True)[:top_n] if s>0]
@@ -236,7 +260,12 @@ def preprocess_file(filepath: str, output_dir: str = "data/nlp"):
     for tweet, doc in zip(tweets, docs):
         tweet["tokens"]            = [t.text.lower() for t in doc if t.is_alpha and t.text.lower() not in STOPWORDS]
         tweet["lemmatized_tokens"] = [t.lemma_.lower() for t in doc if t.is_alpha and t.lemma_.lower() not in STOPWORDS]
-        entities                   = [{"text": e.text, "label": e.label_} for e in doc.ents]
+        # Fix 3: inject CamelCase-split hashtag words
+        ht_words = [w.lower() for w in expand_hashtags(tweet.get("hashtags", [])) if w.lower() not in STOPWORDS]
+        tweet["tokens"]            += ht_words
+        tweet["lemmatized_tokens"] += ht_words
+        # Fix 4: normalize entity case — title-case so "india" and "India" merge
+        entities                   = [{"text": e.text.title(), "label": e.label_} for e in doc.ents]
         tweet["entities"]          = entities
         tweet["entity_freq"]       = dict(Counter([e["text"] for e in entities]))
         tweet["engagement"]        = get_engagement(tweet)

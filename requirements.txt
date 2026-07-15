@@ -1,34 +1,38 @@
-# ── Acquisition ───────────────────────────────────────────
+# ── Acquisition ───────────────────────────────────────────────────────────────
 requests
 python-dotenv
 twikit
 
-# ── NLP Core ──────────────────────────────────────────────
+# ── NLP Core ──────────────────────────────────────────────────────────────────
 nltk
-spacy
+spacy>=3.7.0
 langdetect
 emoji
 
-# ── Sentiment Analysis ────────────────────────────────────
+# ── Sentiment Analysis ────────────────────────────────────────────────────────
 vaderSentiment
-transformers
-torch
+transformers>=4.35.0,<5.0
+torch>=2.0.0
 
-# ── Topic Modelling ───────────────────────────────────────
-bertopic
+# ── Topic Modelling ───────────────────────────────────────────────────────────
+bertopic>=0.16.0
+sentence-transformers>=2.2.0
+hdbscan
+umap-learn
+scipy
 
-# ── Keyword Extraction & ML ───────────────────────────────
+# ── Keyword Extraction & ML ───────────────────────────────────────────────────
 scikit-learn
 
-# ── Progress & Utilities ──────────────────────────────────
+# ── Progress & Utilities ──────────────────────────────────────────────────────
 tqdm
 
-# ── Database & Analysis ───────────────────────────────────
+# ── Database & Analysis ───────────────────────────────────────────────────────
 pandas
+
+# ── Visualisation ─────────────────────────────────────────────────────────────
 matplotlib
 seaborn
 wordcloud
-
-# ── Visualisation ─────────────────────────────────────────
-hdbscan
-umap-learn
+streamlit
+plotly

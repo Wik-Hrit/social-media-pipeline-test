@@ -31,6 +31,7 @@ if TWIKIT_AVAILABLE and not all([TWITTER_USERNAME, TWITTER_EMAIL, TWITTER_PASSWO
     log.error("[twikit] Credentials missing in .env (TWITTER_USERNAME / TWITTER_EMAIL / TWITTER_PASSWORD)")
 
 _client = None
+_loop: asyncio.AbstractEventLoop | None = None   # Fix 2: persistent loop
 
 
 async def _login_fresh(client):
@@ -77,6 +78,21 @@ async def _fetch(query, query_type="Latest", count=20):
 
             tweets = []
             for t in raw_tweets:
+                # Fix 1: proper retweetedTweet detection
+                rt = getattr(t, "retweeted_tweet", None)
+                retweeted_id = str(rt.id) if rt else None
+
+                # Fix 12: viewCount — None means unknown, not zero
+                view_count = getattr(t, "view_count", None) or None
+
+                # Fix 13: extract hashtags from Twikit object or regex fallback
+                import re as _re
+                twikit_tags = []
+                if hasattr(t, "hashtags") and t.hashtags:
+                    twikit_tags = [{"text": h} for h in t.hashtags]
+                elif t.text:
+                    twikit_tags = [{"text": m} for m in _re.findall(r"#(\w+)", t.text)]
+
                 tweets.append({
                     "id":           str(t.id),
                     "text":         t.text,
@@ -89,11 +105,11 @@ async def _fetch(query, query_type="Latest", count=20):
                     "retweetCount": getattr(t, "retweet_count", 0),
                     "likeCount":    getattr(t, "favorite_count", 0),
                     "replyCount":   getattr(t, "reply_count", 0),
-                    "viewCount":    getattr(t, "view_count", 0),
+                    "viewCount":    view_count,           # Fix 12
                     "isReply":      getattr(t, "in_reply_to_tweet_id", None) is not None,
-                    "retweetedTweet": None,
+                    "retweetedTweet": retweeted_id,       # Fix 1
                     "twitterUrl":   f"https://twitter.com/i/web/status/{t.id}",
-                    "entities":     {"hashtags": []},
+                    "entities":     {"hashtags": twikit_tags},  # Fix 13
                     "_source":      "twikit",
                 })
 
@@ -129,4 +145,8 @@ async def _fetch(query, query_type="Latest", count=20):
 
 
 def get_twikit(query, query_type="Latest", count=20):
-    return asyncio.run(_fetch(query, query_type, count))
+    global _loop
+    if _loop is None or _loop.is_closed():
+        _loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_loop)
+    return _loop.run_until_complete(_fetch(query, query_type, count))

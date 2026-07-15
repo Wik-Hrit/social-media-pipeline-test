@@ -113,8 +113,8 @@ def generate_query_topics(conn):
         """, (q["id"],)).fetchall()
         texts = [row["cleaned_text"] for row in rows]
 
-        if len(texts) < 5:
-            log.info(f"  Skipping '{q['query_text']}' — only {len(texts)} docs (need >= 5)")
+        if len(texts) < 10:   # Fix 16: BERTopic needs ≥10 docs
+            log.info(f"  Skipping '{q['query_text']}' — only {len(texts)} docs (need >= 10)")
             continue
 
         log.info(f"  '{q['query_text']}': {len(texts)} pooled docs")

@@ -121,6 +121,8 @@ def chart_wordcloud(keywords: dict):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def chart_hashtags(hashtags: dict):
+    if not hashtags:                                          # Fix 18
+        log.warning("No hashtags data — skipping chart"); return
     fig, axes = plt.subplots(
         nrows=(len(hashtags) + 1) // 2, ncols=2,
         figsize=(16, max(6, 3 * ((len(hashtags) + 1) // 2)))
@@ -158,8 +160,8 @@ def chart_hashtags(hashtags: dict):
 def chart_engagement(engagement: dict):
     queries      = list(engagement.keys())
     labels       = [short(q) for q in queries]
-    avg_likes    = [engagement[q]["avg_likes"]    for q in queries]
-    avg_retweets = [engagement[q]["avg_retweets"] for q in queries]
+    avg_likes    = [engagement[q].get("avg_likes")    or 0 for q in queries]   # Fix 17
+    avg_retweets = [engagement[q].get("avg_retweets") or 0 for q in queries]   # Fix 17
 
     x   = range(len(queries))
     w   = 0.35
@@ -307,13 +309,23 @@ if __name__ == "__main__":
     data = load()
 
     log.info("Generating charts...")
-    chart_sentiment(data["sentiment"])
-    chart_wordcloud(data["keywords"])
-    chart_hashtags(data["hashtags"])
-    chart_engagement(data["engagement"])
-    chart_sources(data["sources"])
-    chart_agreement(data["agreement"])
-    chart_volume(data["volume"])
+    CHART_MAP = {
+        "sentiment":  chart_sentiment,
+        "keywords":   chart_wordcloud,
+        "hashtags":   chart_hashtags,
+        "engagement": chart_engagement,
+        "sources":    chart_sources,
+        "agreement":  chart_agreement,
+        "volume":     chart_volume,
+    }
+    for key, fn in CHART_MAP.items():
+        if key not in data:
+            log.warning(f"  '{key}' not in analysis — skipping")
+            continue
+        try:
+            fn(data[key])
+        except Exception as e:
+            log.error(f"  Chart '{key}' failed: {e}", exc_info=True)
 
     log.info(f"All 7 charts saved to {CHARTS_DIR}/")
     print(f"\n✓ Charts saved to {CHARTS_DIR}/")

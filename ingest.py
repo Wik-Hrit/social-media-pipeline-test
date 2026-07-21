@@ -157,12 +157,7 @@ def ingest_all():
         already_ingested = {row["nlp_file"] for row in rows}
     log.info(f"Already ingested: {len(already_ingested)} files — will skip")
 
-    total_tweets   = 0
-    total_nlp      = 0
-    total_entities = 0
-    total_hashtags = 0
-    total_keywords = 0
-    total_files    = len(processed_map)
+    total_files = len(processed_map)
 
     for i, (fname, processed_path) in enumerate(sorted(processed_map.items()), 1):
         # I3: skip already ingested
@@ -203,39 +198,42 @@ def ingest_all():
             )
 
             n_tweets = insert_tweets(conn, run_id, tweets, default_source=meta.get("apiSource"))
-            total_tweets += n_tweets
             log.info(f"  ✓ {n_tweets} tweets")
 
             n_ht = insert_hashtags(conn, run_id, tweets)
-            total_hashtags += n_ht
             log.info(f"  ✓ {n_ht} hashtags")
 
             if nlp_data:
                 nlp_tweets = nlp_data.get("tweets", [])
                 n_nlp      = insert_nlp(conn, run_id, nlp_tweets)
-                total_nlp += n_nlp
                 n_ent      = insert_entities(conn, run_id, nlp_tweets)
-                total_entities += n_ent
                 n_kw       = insert_keywords(conn, run_id, nlp_tweets)
-                total_keywords += n_kw
                 n_events   = insert_events(conn, run_id, nlp_data.get("events", []))
                 log.info(f"  ✓ {n_nlp} NLP | {n_ent} entities | {n_kw} keywords | "
                          f"{n_events} events")
             else:
                 log.warning(f"  No NLP file found for {fname} — NLP tables skipped")
 
-    # Fix 3: per-query BERTopic — run once per query, pooling text across
-    # every fetch_run for that query, after all files are ingested.
+    # Fix 3: per-query BERTopic — run once per query after all files ingested
     with get_conn() as conn:
         generate_query_topics(conn)
 
+    # BUG FIX: query actual DB row counts instead of summing insert-call
+    # return values (which counted calls, not rows, inflating NLP rows: 1933 → 1121)
+    with get_conn() as conn:
+        actual_tweets   = conn.execute("SELECT COUNT(*) FROM tweets").fetchone()[0]
+        actual_nlp      = conn.execute("SELECT COUNT(*) FROM tweet_nlp").fetchone()[0]
+        actual_entities = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
+        actual_hashtags = conn.execute("SELECT COUNT(*) FROM hashtags").fetchone()[0]
+        actual_keywords = conn.execute("SELECT COUNT(*) FROM keywords").fetchone()[0]
+
     log.info(f"\n{'='*55}")
-    log.info(f"Ingestion complete.")
-    log.info(f"  Tweets    : {total_tweets}")
-    log.info(f"  NLP rows  : {total_nlp}")
-    log.info(f"  Entities  : {total_entities}")
-    log.info(f"  Hashtags  : {total_hashtags}")
-    log.info(f"  Keywords  : {total_keywords}")
+    log.info(f"Ingestion complete — actual DB row counts:")
+    log.info(f"  Tweets    : {actual_tweets:,}")
+    log.info(f"  NLP rows  : {actual_nlp:,}")
+    log.info(f"  Entities  : {actual_entities:,}")
+    log.info(f"  Hashtags  : {actual_hashtags:,}")
+    log.info(f"  Keywords  : {actual_keywords:,}")
     log.info(f"  Database  : {DB_PATH}")
 
 

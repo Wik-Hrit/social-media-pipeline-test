@@ -43,11 +43,31 @@ def main():
 
     # ── 1. Sentiment summary ──────────────────────────────────────────────────
     w("## 1. Sentiment Overview\n")
-    overall = sentiment.get("overall", {})
-    total   = overall.get("total", 0)
-    pos     = overall.get("positive", 0)
-    neu     = overall.get("neutral", 0)
-    neg     = overall.get("negative", 0)
+
+    # BUG FIX: analysis.py writes sentiment keyed directly by query name:
+    #   {"AI India": {"positive": 13, "neutral": 4, "negative": 3, "total": 20}, ...}
+    # There is no "overall" wrapper. Original code did sentiment.get("overall", {})
+    # which always returned {}, giving total=0 for every run.
+    # Fix: aggregate by summing across all query entries.
+    total, pos, neu, neg = 0, 0, 0, 0
+    by_query = {}
+    for q, counts in sentiment.items():
+        if not isinstance(counts, dict):
+            continue
+        q_total = counts.get("total",    0)
+        q_pos   = counts.get("positive", 0)
+        q_neu   = counts.get("neutral",  0)
+        q_neg   = counts.get("negative", 0)
+        total += q_total
+        pos   += q_pos
+        neu   += q_neu
+        neg   += q_neg
+        if q_total:
+            by_query[q] = {
+                "positive_pct": q_pos / q_total * 100,
+                "negative_pct": q_neg / q_total * 100,
+                "total":        q_total,
+            }
 
     w(f"- **Total tweets analysed:** {total:,}")
     w(f"- **Positive:** {pos} ({pos/total*100:.1f}%)" if total else "- **Positive:** 0")
@@ -55,10 +75,9 @@ def main():
     w(f"- **Negative:** {neg} ({neg/total*100:.1f}%)" if total else "- **Negative:** 0")
     w("")
 
-    by_query = sentiment.get("by_query", {})
     if by_query:
-        most_pos = max(by_query.items(), key=lambda x: x[1].get("positive_pct", 0), default=(None, {}))[0]
-        most_neg = max(by_query.items(), key=lambda x: x[1].get("negative_pct", 0), default=(None, {}))[0]
+        most_pos = max(by_query.items(), key=lambda x: x[1]["positive_pct"])[0]
+        most_neg = max(by_query.items(), key=lambda x: x[1]["negative_pct"])[0]
         w(f"- **Most positive query:** `{most_pos}`")
         w(f"- **Most negative query:** `{most_neg}`\n")
 
@@ -76,14 +95,14 @@ def main():
         w(f"- **Highest avg likes:** `{top_eng[0][0]}` — {top_eng[0][1].get('avg_likes') or 0:.1f} likes/tweet")
 
         top_rt  = max(engagement.items(), key=lambda x: x[1].get("avg_retweets") or 0, default=(None, {}))[0]
-        top_vw  = max(engagement.items(), key=lambda x: x[1].get("avg_views") or 0, default=(None, {}))[0]   # Fix 8
+        top_vw  = max(engagement.items(), key=lambda x: x[1].get("avg_views") or 0, default=(None, {}))[0]
         w(f"- **Highest avg retweets:** `{top_rt}`")
         w(f"- **Highest avg views:** `{top_vw}`\n")
 
         w("| Query | Tweets | Avg Likes | Avg Retweets | Avg Views |")
         w("|-------|--------|-----------|--------------|-----------|")
         for q, e in top_eng[:10]:
-            avg_views = e.get("avg_views") or 0   # Fix 8: None → 0
+            avg_views = e.get("avg_views") or 0
             w(f"| {q} | {e.get('tweet_count',0)} | {e.get('avg_likes') or 0:.1f} | "
               f"{e.get('avg_retweets') or 0:.1f} | {avg_views:.1f} |")
         w("")
@@ -137,5 +156,5 @@ def main():
     print(f"✓ Report saved → {OUTPUT}")
 
 
-if __name__ == "__main__":   # Fix 9
+if __name__ == "__main__":
     main()

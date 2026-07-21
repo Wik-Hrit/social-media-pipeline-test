@@ -10,6 +10,7 @@ import os
 import sys
 import json
 import csv
+import re
 import logging
 from collections import defaultdict
 
@@ -74,12 +75,23 @@ def flatten_tweet(tweet):
     }
 
 
-def slugify(fname):
-    return os.path.splitext(fname)[0]
+def topic_from_filename(fname):
+    """
+    BUG FIX: Strip timestamp suffix so files are grouped by topic, not by run.
+
+    'climate_change_2024-11-03T14-22-11.json' -> 'climate_change'
+    'ai_ethics_20241103_142211.json'           -> 'ai_ethics'
+    'bitcoin.json'                             -> 'bitcoin'
+    """
+    name = os.path.splitext(fname)[0]
+    # Strip _YYYY-MM-DD... (ISO date with dashes, with or without time)
+    name = re.sub(r'_\d{4}-\d{2}-\d{2}.*$', '', name)
+    # Strip _YYYYMMDD... (compact date, no dashes)
+    name = re.sub(r'_\d{8}.*$', '', name)
+    return name
 
 
 def export_csv(nlp_dir="data/nlp", output_dir="data/csv"):
-    # Fix 27: directory guard
     if not os.path.exists(nlp_dir):
         log.error(f"{nlp_dir} not found. Run preprocess.py first.")
         return
@@ -87,16 +99,19 @@ def export_csv(nlp_dir="data/nlp", output_dir="data/csv"):
     os.makedirs(output_dir, exist_ok=True)
     topic_files = defaultdict(list)
 
-    # Fix 27: use os.walk to recurse into date subdirectories
     for root, dirs, filenames in os.walk(nlp_dir):
         for fname in filenames:
             if fname.endswith(".json"):
-                topic = slugify(fname)
+                # BUG FIX: was slugify(fname) which kept the timestamp,
+                # producing one CSV per fetch run (148) instead of per topic (24)
+                topic = topic_from_filename(fname)
                 topic_files[topic].append(os.path.join(root, fname))
 
     if not topic_files:
         log.warning(f"No JSON files found under {nlp_dir}")
         return
+
+    log.info(f"Found {len(topic_files)} unique topics across all NLP files")
 
     total_rows = 0
     for topic, files in sorted(topic_files.items()):
@@ -127,7 +142,7 @@ def export_csv(nlp_dir="data/nlp", output_dir="data/csv"):
         log.info(f"  ✓ {topic[:40]:<40} {len(rows):>5} rows → {out_path}")
         total_rows += len(rows)
 
-    log.info(f"\n✓ Export complete — {total_rows:,} total rows across {len(topic_files)} files → {output_dir}/")
+    log.info(f"\n✓ Export complete — {total_rows:,} total rows across {len(topic_files)} topics → {output_dir}/")
 
 
 if __name__ == "__main__":
